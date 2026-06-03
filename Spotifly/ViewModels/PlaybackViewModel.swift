@@ -55,6 +55,7 @@ final class PlaybackViewModel {
     var isPlaying = false
     var isLoading = false
     var currentTrackUri: String?
+    private var lastHandledTrackUri: String?
     var errorMessage: String?
 
     /// Returns the URI of the currently playing track (alias for currentTrackUri)
@@ -155,6 +156,7 @@ final class PlaybackViewModel {
         isPlaying = false
         updateNowPlayingPosition()
         currentTrackUri = nil
+        lastHandledTrackUri = nil
         trackDurationMs = 0
         currentPositionMs = 0
         positionAnchorMs = 0
@@ -261,6 +263,7 @@ final class PlaybackViewModel {
     /// Common setup after playback has started
     private func handlePlaybackStarted(trackId: String) {
         currentTrackUri = trackId
+        lastHandledTrackUri = trackId
         isPlaying = true
         // Apply volume after playback starts (mixer is now initialized)
         SpotifyPlayer.setVolume(volume)
@@ -287,6 +290,7 @@ final class PlaybackViewModel {
         SpotifyPlayer.stop()
         isPlaying = false
         currentTrackUri = nil
+        lastHandledTrackUri = nil
     }
 
     /// Sets the AppStore reference. Call this after AppStore is created.
@@ -699,6 +703,11 @@ final class PlaybackViewModel {
         isPlaying = newIsPlaying
 
         // Update track if changed
+        let trackChanged = !state.trackUri.isEmpty && state.trackUri != lastHandledTrackUri
+        if trackChanged {
+            lastHandledTrackUri = state.trackUri
+        }
+
         if !state.trackUri.isEmpty, state.trackUri != currentTrackUri {
             currentTrackUri = state.trackUri
             // Note: Track metadata (name, artist, etc.) will be updated from queue
@@ -735,8 +744,10 @@ final class PlaybackViewModel {
             currentPositionMs = posMs
         }
 
-        // Update Now Playing position if playback rate changed
-        if wasPlaying != isPlaying {
+        // Update Now Playing position if playback rate changed, or if track changed
+        if trackChanged {
+            updateNowPlayingInfo()
+        } else if wasPlaying != isPlaying {
             updateNowPlayingPosition()
         }
     }
@@ -763,6 +774,7 @@ final class PlaybackViewModel {
         // Update track if provided
         if let uri = trackUri, !uri.isEmpty {
             currentTrackUri = uri
+            lastHandledTrackUri = uri
         }
 
         // Update duration
