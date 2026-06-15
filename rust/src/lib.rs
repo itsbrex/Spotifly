@@ -2481,8 +2481,7 @@ pub extern "C" fn spotifly_is_active_device() -> i32 {
 /// Returns the current playback position in milliseconds.
 /// If playing, interpolates from last known position.
 /// Returns 0 if not playing or no position available.
-#[no_mangle]
-pub extern "C" fn spotifly_get_position_ms() -> u32 {
+fn current_position_ms() -> u32 {
     let stored_position = POSITION_MS.load(Ordering::SeqCst);
     let stored_timestamp = POSITION_TIMESTAMP_MS.load(Ordering::SeqCst);
 
@@ -2501,6 +2500,11 @@ pub extern "C" fn spotifly_get_position_ms() -> u32 {
     } else {
         stored_position
     }
+}
+
+#[no_mangle]
+pub extern "C" fn spotifly_get_position_ms() -> u32 {
+    current_position_ms()
 }
 
 /// Skips to the next track in the queue.
@@ -2638,7 +2642,14 @@ async fn play_radio_async(uri_str: &str) -> i32 {
         }
     };
 
-    debug!("Loading radio playlist: {}", playlist_uri);
+    let current_track_uri = CURRENT_TRACK_URI.lock().unwrap().clone();
+    let seek_to = if current_track_uri.as_deref() == Some(uri_str) {
+        current_position_ms()
+    } else {
+        0
+    };
+
+    debug!("Loading radio playlist: {} at {}ms", playlist_uri, seek_to);
 
     let spirc_guard = SPIRC.lock().unwrap();
     match spirc_guard.as_ref() {
@@ -2651,7 +2662,7 @@ async fn play_radio_async(uri_str: &str) -> i32 {
                 playlist_uri.clone(),
                 LoadRequestOptions {
                     start_playing: true,
-                    seek_to: 0,
+                    seek_to,
                     playing_track: Some(PlayingTrack::Uri(uri_str.to_string())),
                     ..Default::default()
                 },

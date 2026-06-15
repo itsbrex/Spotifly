@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refactored the logged-in shell so `NavigationCoordinator` now owns section selection, library detail selection, drill-down path, and back/forward history, with toolbar, lifecycle, and column routing extracted out of `LoggedInView`
 
 ### Fixed
+- Starting song radio from the currently playing track now seeks with the same interpolated playback position the UI uses, avoiding stale-position jumps when the radio context loads
 - Fixed the Now Playing overlay (menu bar) not updating when a song auto-advances during album/playlist playback
 - Favorites now resolve via batched `/me/tracks/contains` checks for the tracks actually shown in album, playlist, queue, search, and now-playing views instead of depending on a full favorites preload
 - Saving and removing favorite tracks now uses Spotify's saved-tracks endpoint correctly, so heart toggles persist again across Spotify clients
