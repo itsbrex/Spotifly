@@ -28,11 +28,11 @@ struct LoggedInView: View {
     @State private var deviceService: DeviceService
     @State private var navigationCoordinator: NavigationCoordinator
 
-    /// Services whose state lives entirely in AppStore.
-    private var trackService: TrackService {
-        TrackService(store: store)
-    }
+    /// Persisted because it stores the in-flight favorites load task for dedup and
+    /// cancellation-resilience across view recreation.
+    @State private var trackService: TrackService
 
+    /// Services whose state lives entirely in AppStore.
     private var recentlyPlayedService: RecentlyPlayedService {
         RecentlyPlayedService(store: store)
     }
@@ -63,6 +63,7 @@ struct LoggedInView: View {
         _connectionService = State(initialValue: ConnectionService(store: store))
         _deviceService = State(initialValue: DeviceService(store: store))
         _navigationCoordinator = State(initialValue: NavigationCoordinator(store: store))
+        _trackService = State(initialValue: TrackService(store: store))
 
         playbackViewModel.setStore(store)
     }
