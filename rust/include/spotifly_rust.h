@@ -9,25 +9,38 @@
 extern "C" {
 #endif
 
-/// Frees a C string allocated by this library.
-void spotifly_free_string(char* s);
+// Pointer parameters and return values are non-null by default within this
+// region. The few that may be null are marked explicitly with `_Nullable`.
+#pragma clang assume_nonnull begin
+
+/// Frees a C string allocated by this library. Tolerates NULL (e.g. the result
+/// of a function that returned NULL on error).
+void spotifly_free_string(char* _Nullable s);
 
 // ============================================================================
 // Error codes
 // ============================================================================
 //
-// Most functions return:
-//   0  = success
-//  -1  = general error
-//  -2  = session disconnected, needs reinitialization
-//        (call spotifly_init_player again with a fresh token)
-//  -3  = session not connected (command rejected, wait for session to connect)
+// Command functions return a SpotiflyResult:
+//   SpotiflyResultOk                   ( 0) = success
+//   SpotiflyResultError                (-1) = general error
+//   SpotiflyResultSessionDisconnected  (-2) = session disconnected, needs reinitialization
+//                                             (call spotifly_init_player again with a fresh token)
+//   SpotiflyResultSessionNotConnected  (-3) = session not connected (command rejected,
+//                                             wait for session to connect)
 //
-// When you receive -2, the Spirc channel has closed (e.g., due to idle timeout).
-// Get a fresh access token and call spotifly_init_player() to reconnect.
+// On SpotiflyResultSessionDisconnected, the Spirc channel has closed (e.g., due
+// to idle timeout). Get a fresh access token and call spotifly_init_player() to
+// reconnect.
 //
-// When you receive -3, the session is not yet connected. Wait for the
-// session_connected callback before retrying the command.
+// On SpotiflyResultSessionNotConnected, the session is not yet connected. Wait
+// for the session_connected callback before retrying the command.
+typedef enum __attribute__((enum_extensibility(open))) SpotiflyResult : int32_t {
+    SpotiflyResultOk = 0,
+    SpotiflyResultError = -1,
+    SpotiflyResultSessionDisconnected = -2,
+    SpotiflyResultSessionNotConnected = -3,
+} SpotiflyResult;
 
 // ============================================================================
 // Playback functions
@@ -35,49 +48,41 @@ void spotifly_free_string(char* s);
 
 /// Initializes the player with the given access token.
 /// Must be called before play/pause operations.
-/// Returns 0 on success, -1 on error.
-int32_t spotifly_init_player(const char* access_token);
+SpotiflyResult spotifly_init_player(const char* access_token);
 
 /// Plays multiple tracks in sequence.
-/// Returns 0 on success, -1 on error.
 ///
 /// @param track_uris_json JSON array of track URIs as a C string
-int32_t spotifly_play_tracks(const char* track_uris_json);
+SpotiflyResult spotifly_play_tracks(const char* track_uris_json);
 
 /// Plays content by its Spotify URI or URL.
 /// Supports albums, playlists, and artists (context URIs).
 /// @param uri_or_url Spotify URI or URL (e.g., "spotify:album:xxx")
 /// @param track_index Track index to start at (-1 = from beginning, 0+ = specific track)
-/// Returns 0 on success, -1 on error.
-int32_t spotifly_play_uri(const char* uri_or_url, int32_t track_index);
+SpotiflyResult spotifly_play_uri(const char* uri_or_url, int32_t track_index);
 
 /// Pauses playback.
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
-int32_t spotifly_pause(void);
+SpotiflyResult spotifly_pause(void);
 
 /// Clears any buffered audio samples.
 /// Call this before sleep to prevent stale audio playing on wake.
 void spotifly_clear_audio_buffer(void);
 
 /// Resumes playback.
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
-int32_t spotifly_resume(void);
+SpotiflyResult spotifly_resume(void);
 
 /// Stops playback completely.
-/// Returns 0 on success, -1 on error.
-int32_t spotifly_stop(void);
+SpotiflyResult spotifly_stop(void);
 
 /// Shuts down the Spirc connection and sends goodbye to other devices.
 /// Call this when the app is quitting to properly disconnect from Spotify Connect.
-/// Returns 0 on success, -1 on error.
-int32_t spotifly_shutdown(void);
+SpotiflyResult spotifly_shutdown(void);
 
 /// Disconnects from Spotify Connect without preventing future reconnection.
 /// Use this before system sleep - the device disappears from Spotify immediately,
 /// but forceReconnect() can still bring it back on wake.
 /// Unlike shutdown(), this does NOT block auto-reconnect.
-/// Returns 0 on success, -1 on error.
-int32_t spotifly_disconnect(void);
+SpotiflyResult spotifly_disconnect(void);
 
 /// Cleans up all player state, allowing a fresh reinitialization.
 /// Call this before spotifly_init_player() when the session has disconnected.
@@ -241,18 +246,24 @@ void spotifly_register_connection_state_callback(ConnectionStateCallback callbac
 // Audio output callbacks
 // ============================================================================
 
+/// Audio playback control event, delivered to AudioControlCallback.
+typedef enum __attribute__((enum_extensibility(open))) SpotiflyAudioControlEvent : uint8_t {
+    SpotiflyAudioControlEventStop = 0,
+    SpotiflyAudioControlEventStart = 1,
+    SpotiflyAudioControlEventClear = 2,
+} SpotiflyAudioControlEvent;
+
 /// Callback function type for receiving raw PCM audio data.
 /// Audio format: 44100 Hz, 2 channels (stereo), Float32, interleaved.
 /// Called from a background thread - must be thread-safe.
 ///
 /// @param samples Pointer to interleaved f32 samples
 /// @param sample_count Number of f32 values (frames * 2 for stereo)
-typedef void (*AudioDataCallback)(const float* samples, size_t sample_count);
+typedef void (*AudioDataCallback)(const float* _Nullable samples, size_t sample_count);
 
-/// Callback function type for audio control events.
-/// Events: 0 = stop, 1 = start/resume, 2 = clear/flush.
+/// Callback function type for audio control events (start/stop/clear).
 /// Called from a background thread - must be thread-safe.
-typedef void (*AudioControlCallback)(uint8_t event);
+typedef void (*AudioControlCallback)(SpotiflyAudioControlEvent event);
 
 /// Registers a callback to receive raw PCM audio data from the decoder.
 /// The callback is called for each decoded audio chunk (~4096 samples).
@@ -261,60 +272,51 @@ void spotifly_register_audio_data_callback(AudioDataCallback callback);
 /// Registers a callback for audio playback control events (start/stop/clear).
 void spotifly_register_audio_control_callback(AudioControlCallback callback);
 
-/// Returns the current connection state as a JSON string.
+/// Returns the current connection state as a JSON string, or NULL on error.
 /// Caller must free the returned string using spotifly_free_string().
-char* spotifly_get_connection_state(void);
+char* _Nullable spotifly_get_connection_state(void);
 
 /// Skips to the next track in the queue.
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
-int32_t spotifly_next(void);
+SpotiflyResult spotifly_next(void);
 
 /// Skips to the previous track in the queue.
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
-int32_t spotifly_previous(void);
+SpotiflyResult spotifly_previous(void);
 
 /// Seeks to the given position in milliseconds.
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
-int32_t spotifly_seek(uint32_t position_ms);
+SpotiflyResult spotifly_seek(uint32_t position_ms);
 
 /// Plays radio for a seed track.
 /// Gets the radio playlist URI and loads it directly via Spirc.
-/// Returns 0 on success, -1 on error.
 ///
 /// @param track_uri Spotify track URI (e.g., "spotify:track:xxx")
-int32_t spotifly_play_radio(const char* track_uri);
+SpotiflyResult spotifly_play_radio(const char* track_uri);
 
 /// Sets the playback volume (0-65535).
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
 ///
 /// @param volume Volume level (0 = muted, 65535 = max)
-int32_t spotifly_set_volume(uint16_t volume);
+SpotiflyResult spotifly_set_volume(uint16_t volume);
 
 /// Sets shuffle mode for the current playback context.
-/// Returns 0 on success, -1 on error, -2 if session disconnected.
 ///
 /// @param enabled true to enable shuffle, false to disable it
-int32_t spotifly_set_shuffle(bool enabled);
+SpotiflyResult spotifly_set_shuffle(bool enabled);
 
 /// Transfers playback from another device to this local player.
 /// Uses the native Spotify Connect protocol via Spirc.
-/// Returns 0 on success, -1 on error.
-int32_t spotifly_transfer_to_local(void);
+SpotiflyResult spotifly_transfer_to_local(void);
 
 /// Transfers playback from this local player to another device.
 /// Uses the native Spotify Connect protocol via SpClient.
-/// Returns 0 on success, -1 on error.
 ///
 /// @param to_device_id The target device ID to transfer playback to
-int32_t spotifly_transfer_playback(const char* to_device_id);
+SpotiflyResult spotifly_transfer_playback(const char* to_device_id);
 
 /// Adds content to the queue.
 /// Supports tracks, episodes, albums, playlists, artists, and shows.
 /// For albums/playlists/artists/shows, all tracks/episodes are resolved and queued.
-/// Returns 0 on success, -1 on error.
 ///
 /// @param uri Spotify URI (e.g., "spotify:track:xxx", "spotify:album:xxx")
-int32_t spotifly_add_to_queue(const char* uri);
+SpotiflyResult spotifly_add_to_queue(const char* uri);
 
 // ============================================================================
 // Playback settings (take effect on next player initialization)
@@ -345,6 +347,8 @@ bool spotifly_get_gapless(void);
 ///
 /// @param volume Initial volume level (0 = muted, 65535 = max)
 void spotifly_set_initial_volume(uint16_t volume);
+
+#pragma clang assume_nonnull end
 
 #ifdef __cplusplus
 }

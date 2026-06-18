@@ -153,11 +153,6 @@ private nonisolated(unsafe) let sessionClientChangedSubject = PassthroughSubject
 /// Audio renderer for AirPlay-compatible playback via AVSampleBufferAudioRenderer
 private nonisolated let audioRenderer = AudioRenderer()
 
-/// Audio control event codes (must match Rust proxy_sink constants)
-private let audioControlStop: UInt8 = 0
-private let audioControlStart: UInt8 = 1
-private let audioControlClear: UInt8 = 2
-
 /// Registers the audio data callback with Rust
 private nonisolated func registerAudioDataCallback() {
     spotifly_register_audio_data_callback { samples, count in
@@ -170,10 +165,10 @@ private nonisolated func registerAudioDataCallback() {
 private nonisolated func registerAudioControlCallback() {
     spotifly_register_audio_control_callback { event in
         switch event {
-        case audioControlStop: audioRenderer.stop()
-        case audioControlStart: audioRenderer.start()
-        case audioControlClear: audioRenderer.flush()
-        default: break
+        case .stop: audioRenderer.stop()
+        case .start: audioRenderer.start()
+        case .clear: audioRenderer.flush()
+        @unknown default: break
         }
     }
 }
@@ -723,7 +718,7 @@ enum SpotifyPlayer {
             }
         }.value
 
-        guard result == 0 else {
+        guard result == .ok else {
             throw SpotifyPlayerError.initializationFailed
         }
     }
@@ -867,7 +862,7 @@ enum SpotifyPlayer {
             }
         }.value
 
-        guard result == 0 else {
+        guard result == .ok else {
             throw SpotifyPlayerError.playbackFailed
         }
     }
@@ -901,7 +896,7 @@ enum SpotifyPlayer {
             }
         }.value
 
-        guard result == 0 else {
+        guard result == .ok else {
             throw SpotifyPlayerError.playbackFailed
         }
     }
