@@ -69,6 +69,28 @@ enum KeychainManager {
         )
     }
 
+    /// Refreshes the access token and persists the outcome — the single source of
+    /// truth for the refresh-and-store policy used by both the launch path and the
+    /// runtime session.
+    ///
+    /// - On success: the new tokens are saved to the keychain and returned.
+    /// - On `SpotifyAuthError.tokenRevoked` (`invalid_grant`): the stored
+    ///   credentials are discarded — per Spotify's token-expiration policy the
+    ///   token must not be reused — and the error is re-thrown so the caller can
+    ///   send the user back through sign-in.
+    /// - On a transient failure: the error is re-thrown *without* clearing, so the
+    ///   caller can keep the existing token and retry later.
+    static func refreshAndPersist(refreshToken: String) async throws -> SpotifyAuthResult {
+        do {
+            let newResult = try await SpotifyAuth.refreshAccessToken(refreshToken: refreshToken)
+            try? saveAuthResult(newResult)
+            return newResult
+        } catch SpotifyAuthError.tokenRevoked {
+            clearAuthResult()
+            throw SpotifyAuthError.tokenRevoked
+        }
+    }
+
     /// Loads the OAuth result from the keychain and attempts to refresh if expired
     /// - Returns: A valid auth result, or nil if unable to load/refresh
     static func loadAuthResultWithRefresh() async -> SpotifyAuthResult? {
@@ -76,30 +98,16 @@ enum KeychainManager {
             return nil
         }
 
-        // Check if token is expired or expiring soon (within 5 minutes)
-        let isExpired = result.expiresIn < 300 // 5 minutes
-
-        if isExpired, let refreshToken = result.refreshToken {
-            // Attempt to refresh the token
-            do {
-                let newResult = try await SpotifyAuth.refreshAccessToken(refreshToken: refreshToken)
-
-                // Save the new result to keychain
-                try saveAuthResult(newResult)
-
-                return newResult
-            } catch {
-                #if DEBUG
-                    print("Failed to refresh token: \(error)")
-                #endif
-                // If refresh fails, clear the stored credentials
-                clearAuthResult()
-                return nil
-            }
+        // Still valid, or nothing to refresh with — use as-is.
+        guard result.expiresIn < UInt64(SpotifyAuthResult.refreshBufferSeconds),
+              let refreshToken = result.refreshToken
+        else {
+            return result
         }
 
-        // Token is still valid
-        return result
+        // `refreshAndPersist` discards the token on a revoked grant; a transient
+        // failure leaves it in place so a later relaunch can recover.
+        return try? await refreshAndPersist(refreshToken: refreshToken)
     }
 
     /// Clears all stored OAuth data from the keychain

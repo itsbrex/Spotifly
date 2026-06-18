@@ -20,6 +20,10 @@ struct SpotifyAuthResult {
     let accessToken: String
     let refreshToken: String?
     let expiresIn: UInt64
+
+    /// Refresh once the access token has this many seconds or less of validity left.
+    /// Single source of truth shared by every refresh path (launch and runtime).
+    static let refreshBufferSeconds: TimeInterval = 300
 }
 
 /// Errors that can occur during Spotify authentication
@@ -27,6 +31,10 @@ enum SpotifyAuthError: Error, LocalizedError {
     case authenticationFailed
     case noTokenAvailable
     case refreshFailed
+    /// The refresh token is no longer valid (`invalid_grant`). Per Spotify's
+    /// token-expiration policy the stored token must be discarded and the user
+    /// sent through the sign-in flow again; retrying is futile.
+    case tokenRevoked
     case invalidCallbackURL
     case noAuthorizationCode
     case tokenExchangeFailed(String)
@@ -41,6 +49,8 @@ enum SpotifyAuthError: Error, LocalizedError {
             "No token available"
         case .refreshFailed:
             "Failed to refresh token"
+        case .tokenRevoked:
+            "Session expired, please sign in again"
         case .invalidCallbackURL:
             "Invalid callback URL"
         case .noAuthorizationCode:
@@ -111,6 +121,12 @@ private struct TokenResponse: Decodable {
     let expires_in: Int
     let token_type: String
     let scope: String?
+}
+
+/// Error response from the Spotify token endpoint (RFC 6749 §5.2)
+private struct TokenErrorResponse: Decodable {
+    let error: String
+    let error_description: String?
 }
 
 /// Swift implementation of Spotify OAuth using ASWebAuthenticationSession with PKCE
@@ -279,6 +295,16 @@ enum SpotifyAuth {
         guard httpResponse.statusCode == 200 else {
             let body = String(data: data, encoding: .utf8) ?? "<non-utf8>"
             debugLog("SpotifyAuth", "Token refresh failed with status \(httpResponse.statusCode): \(body)")
+
+            // `invalid_grant` means the refresh token is permanently dead (revoked
+            // or, from July 20 2026, expired after six months). Surface it as a
+            // distinct error so callers re-authenticate instead of retrying.
+            if let errorResponse = try? JSONDecoder().decode(TokenErrorResponse.self, from: data),
+               errorResponse.error == "invalid_grant"
+            {
+                throw SpotifyAuthError.tokenRevoked
+            }
+
             throw SpotifyAuthError.refreshFailed
         }
 

@@ -92,6 +92,17 @@ struct LoggedInView: View {
     }
 
     var body: some View {
+        content
+            // When the refresh token is rejected (revoked, or expired after six
+            // months per Spotify's July 2026 policy) the session invalidates
+            // itself; tear down and return the user to the sign-in flow.
+            .onChange(of: session.isInvalidated) { _, invalidated in
+                if invalidated { onLogout() }
+            }
+    }
+
+    @ViewBuilder
+    private var content: some View {
         switch blockingState {
         case .premiumRequired:
             PremiumRequiredView(

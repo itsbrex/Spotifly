@@ -39,6 +39,10 @@ final class SpotifySession {
     /// Timestamp of last refresh failure (to prevent rapid retry loops)
     private var lastRefreshFailure: Date?
 
+    /// Set once the refresh token is permanently dead — stops all further refresh
+    /// attempts. Observed by the view layer to drive the user back to sign-in.
+    private(set) var isInvalidated = false
+
     init(authResult: SpotifyAuthResult) {
         accessToken = authResult.accessToken
         refreshToken = authResult.refreshToken
@@ -57,8 +61,13 @@ final class SpotifySession {
     /// Returns a valid access token, refreshing if necessary.
     /// This is sleep-proof: validation happens at access time, not on a scheduled timer.
     func validAccessToken() async -> String {
+        // Session is permanently dead — re-auth has been signalled; don't refresh.
+        if isInvalidated {
+            return accessToken
+        }
+
         let expirationDate = tokenObtainedAt.addingTimeInterval(TimeInterval(expiresIn))
-        let bufferDate = Date().addingTimeInterval(300) // 5 min buffer
+        let bufferDate = Date().addingTimeInterval(SpotifyAuthResult.refreshBufferSeconds)
 
         if bufferDate < expirationDate {
             // Token still valid for 5+ minutes
@@ -100,10 +109,12 @@ final class SpotifySession {
         isRefreshing = true
 
         // Use a detached task to prevent the refresh from being cancelled
-        // when the calling view/task is cancelled (e.g., user navigates away)
+        // when the calling view/task is cancelled (e.g., user navigates away).
+        // `refreshAndPersist` is the shared policy: it saves on success and
+        // discards the stored token on a revoked grant.
         let result: Result<SpotifyAuthResult, Error> = await Task.detached(priority: .userInitiated) {
             do {
-                let newResult = try await SpotifyAuth.refreshAccessToken(refreshToken: refreshToken)
+                let newResult = try await KeychainManager.refreshAndPersist(refreshToken: refreshToken)
                 return .success(newResult)
             } catch {
                 return .failure(error)
@@ -113,7 +124,6 @@ final class SpotifySession {
         switch result {
         case let .success(newResult):
             update(with: newResult)
-            try? KeychainManager.saveAuthResult(newResult)
             lastRefreshFailure = nil
             debugLog("SpotifySession", "Token refreshed successfully: \(String(accessToken.prefix(20)))...")
 
@@ -128,10 +138,17 @@ final class SpotifySession {
             return token
 
         case let .failure(error):
-            debugLog("SpotifySession", "Token refresh failed: \(error)")
-
-            // Record failure to prevent rapid retry loop
-            lastRefreshFailure = Date()
+            // A revoked/expired refresh token is permanent: stop retrying and send
+            // the user back through sign-in. The keychain was already cleared by
+            // `refreshAndPersist`.
+            if case SpotifyAuthError.tokenRevoked = error {
+                debugLog("SpotifySession", "Refresh token revoked/expired — invalidating session")
+                isInvalidated = true
+            } else {
+                debugLog("SpotifySession", "Token refresh failed: \(error)")
+                // Transient failure — back off to prevent a rapid retry loop.
+                lastRefreshFailure = Date()
+            }
 
             // Resume waiters with current token (may be expired)
             let token = accessToken

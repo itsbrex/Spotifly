@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Refactored the logged-in shell so `NavigationCoordinator` now owns section selection, library detail selection, drill-down path, and back/forward history, with toolbar, lifecycle, and column routing extracted out of `LoggedInView`
+- Unified token-refresh handling into a single `KeychainManager.refreshAndPersist` policy used by both the launch path (`loadAuthResultWithRefresh`) and the runtime session (`SpotifySession`), eliminating two divergent refresh implementations and centralizing the 5-minute refresh buffer as `SpotifyAuthResult.refreshBufferSeconds`
 
 ### Fixed
+- Handle Spotify's upcoming refresh-token expiration (refresh tokens expire after six months starting July 20, 2026): `invalid_grant` responses are now detected as a distinct `SpotifyAuthError.tokenRevoked`, the stored token is discarded instead of retried, and an expired/revoked token mid-session now invalidates `SpotifySession` and routes the user back to the sign-in flow rather than silently looping on a dead access token
 - Starting song radio from the currently playing track now seeks with the same interpolated playback position the UI uses, avoiding stale-position jumps when the radio context loads
 - Fixed the Now Playing overlay (menu bar) not updating when a song auto-advances during album/playlist playback
 - Favorites now resolve via batched `/me/tracks/contains` checks for the tracks actually shown in album, playlist, queue, search, and now-playing views instead of depending on a full favorites preload
