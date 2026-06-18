@@ -9,7 +9,7 @@ use librespot_core::SessionConfig;
 use librespot_core::SpotifyUri;
 use librespot_playback::config::{AudioFormat, Bitrate, PlayerConfig};
 use librespot_playback::mixer::softmixer::SoftMixer;
-use librespot_playback::mixer::{Mixer, MixerConfig};
+use librespot_playback::mixer::{Mixer, MixerConfig, NoOpVolume};
 use librespot_playback::player::{Player, PlayerEvent};
 use librespot_protocol::connect::ClusterUpdate;
 use librespot_protocol::player::PlayerState;
@@ -1196,7 +1196,7 @@ pub extern "C" fn spotifly_init_player(access_token: *const c_char) -> i32 {
 }
 
 /// Helper function to create a new Player instance
-fn create_new_player(session: &Session, mixer: &Arc<SoftMixer>) -> Result<Arc<Player>, String> {
+fn create_new_player(session: &Session) -> Result<Arc<Player>, String> {
     let bitrate_setting = BITRATE_SETTING.load(Ordering::SeqCst);
     let bitrate = match bitrate_setting {
         0 => Bitrate::Bitrate96,
@@ -1225,10 +1225,16 @@ fn create_new_player(session: &Session, mixer: &Arc<SoftMixer>) -> Result<Arc<Pl
 
     // Use ProxySink - a persistent audio output that survives across Player instances.
     // This enables seamless audio during session reconnection.
+    //
+    // NoOpVolume: do NOT attenuate samples here. Volume is applied at the output
+    // (AVSampleBufferAudioRenderer.volume in Swift) so changes take effect
+    // immediately instead of after the ~2s of already-decoded PCM drains. The
+    // SoftMixer still tracks the logical volume for Spotify Connect reporting; it
+    // just no longer feeds the player's sample gain.
     let player = Player::new(
         player_config,
         session.clone(),
-        mixer.get_soft_volume(),
+        Box::new(NoOpVolume),
         move || mk_proxy_sink(None, audio_format),
     );
 
@@ -1269,7 +1275,7 @@ async fn init_player_async(access_token: &str, activate_after_connect: bool) -> 
 
     // Create new player - must be created with the new session because Player is
     // tightly coupled to Session's ChannelManager for decryption key requests
-    let player = create_new_player(&session, &mixer)?;
+    let player = create_new_player(&session)?;
 
     // Get event channel from player, opting in to SetQueue events
     let mut event_channel = player.get_player_event_channel();

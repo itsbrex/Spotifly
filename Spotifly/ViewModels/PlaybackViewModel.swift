@@ -70,6 +70,9 @@ final class PlaybackViewModel {
     /// Volume (0.0 - 1.0)
     var volume: Double = 0.5 {
         didSet {
+            // Apply the output gain immediately (not debounced) so local volume
+            // changes are audible at once instead of after the render buffer drains.
+            SpotifyPlayer.setOutputVolume(volume)
             // Skip applying to Spirc if this change came from a remote volume callback
             guard !isSettingVolumeLocally else { return }
             // Debounce volume changes to avoid flooding Spirc with requests

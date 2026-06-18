@@ -847,6 +847,11 @@ enum SpotifyPlayer {
         spotifly_set_bitrate(UInt8(min(max(bitrateRawValue, 0), 2)))
         spotifly_set_gapless(gaplessEnabled)
         spotifly_set_initial_volume(volumeU16)
+
+        // Apply the saved volume at the output up front. With NoOpVolume the Rust
+        // mixer no longer attenuates samples, so the renderer gain must be set
+        // before audio starts flowing or the first moments would play at full volume.
+        setOutputVolume(savedVolume > 0 ? savedVolume : 0.5)
     }
 
     /// Plays content by its Spotify URI or URL.
@@ -1009,6 +1014,28 @@ enum SpotifyPlayer {
         Task.detached(priority: .userInitiated) {
             spotifly_set_volume(volumeU16)
         }
+    }
+
+    /// Applies playback volume at the audio output (AVSampleBufferAudioRenderer.volume)
+    /// for an immediate, buffer-independent response. librespot's soft mixer is
+    /// bypassed (NoOpVolume in Rust), so this is where volume is actually applied;
+    /// `setVolume` above still reports the logical volume to Spirc for Spotify
+    /// Connect. The slider value is passed through librespot's default logarithmic
+    /// taper so the perceived loudness curve is unchanged.
+    nonisolated static func setOutputVolume(_ volume: Double) {
+        audioRenderer.setVolume(Float(librespotLogAttenuation(volume)))
+    }
+
+    /// Mirrors librespot's default `VolumeCtrl::Log(60 dB)` mapping
+    /// (`playback/src/mixer/mappings.rs`): `attenuation = exp(ln(r) * v) / r`,
+    /// where `r = db_to_ratio(60) = 10^(60/20) = 1000`. Zero and full are
+    /// special-cased to true mute / unity, matching librespot.
+    private nonisolated static func librespotLogAttenuation(_ volume: Double) -> Double {
+        let v = max(0, min(1, volume))
+        if v <= 0 { return 0 }
+        if v >= 1 { return 1 }
+        let dbRatio = 1000.0
+        return exp(log(dbRatio) * v) / dbRatio
     }
 
     /// Enables or disables shuffle on the local Spirc device.

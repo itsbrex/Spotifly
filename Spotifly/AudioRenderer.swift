@@ -33,6 +33,13 @@ final nonisolated class AudioRenderer: @unchecked Sendable {
     private var renderer = AVSampleBufferAudioRenderer()
     private var synchronizer = AVSampleBufferRenderSynchronizer()
 
+    /// Output gain (0...1) applied at the renderer. librespot's soft mixer is
+    /// bypassed (NoOpVolume), so this is where playback volume is actually applied —
+    /// at the output, which takes effect immediately instead of after the buffered
+    /// PCM drains. Accessed only on `renderQueue` so it stays serialized with
+    /// feeding and pipeline recreation.
+    private var outputVolume: Float = 1.0
+
     // MARK: - Ring Buffer
 
     private let ringBuffer: UnsafeMutablePointer<Float>
@@ -119,6 +126,21 @@ final nonisolated class AudioRenderer: @unchecked Sendable {
         renderer.stopRequestingMediaData()
         synchronizer.removeRenderer(renderer, at: .invalid)
         ringBuffer.deallocate()
+    }
+
+    // MARK: - Volume
+
+    /// Sets the output gain (0...1) applied to playback. Takes effect immediately
+    /// — it scales audio as it is played out, not the already-buffered PCM — so
+    /// volume changes are not delayed by the render buffer. The caller is expected
+    /// to have applied any perceptual curve already (see SpotifyPlayer).
+    func setVolume(_ volume: Float) {
+        let clamped = max(0, min(1, volume))
+        renderQueue.async { [weak self] in
+            guard let self else { return }
+            outputVolume = clamped
+            renderer.volume = clamped
+        }
     }
 
     // MARK: - Ring Buffer Helpers
@@ -407,6 +429,7 @@ final nonisolated class AudioRenderer: @unchecked Sendable {
         }
 
         renderer = AVSampleBufferAudioRenderer()
+        renderer.volume = outputVolume
         synchronizer = AVSampleBufferRenderSynchronizer()
         synchronizer.addRenderer(renderer)
 
