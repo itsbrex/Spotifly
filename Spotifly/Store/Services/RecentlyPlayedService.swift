@@ -22,18 +22,48 @@ final class RecentlyPlayedService {
 
     // MARK: - Loading
 
-    /// Load recently played (only on first call unless refresh is called)
-    func loadRecentlyPlayed(accessToken: String) async {
-        // Skip if already loaded or currently loading (prevents concurrent duplicate requests)
-        guard !store.hasLoadedRecentlyPlayed, !store.recentlyPlayedIsLoading else { return }
-        await refresh(accessToken: accessToken)
+    /// In-flight recently-played load. Stored so concurrent callers await the same
+    /// load instead of starting a new one, and — because it's an unstructured Task —
+    /// so the load survives cancellation of the caller's `.task`. Mirrors the
+    /// library services (AlbumService/ArtistService/PlaylistService/TrackService).
+    private var loadTask: Task<Void, Never>?
+
+    /// Load recently played (only on first call unless forceRefresh is true)
+    func loadRecentlyPlayed(accessToken: String, forceRefresh: Bool = false) async {
+        if !forceRefresh, store.hasLoadedRecentlyPlayed { return }
+
+        // Force refresh cancels any in-flight load and starts over
+        if forceRefresh {
+            loadTask?.cancel()
+            loadTask = nil
+        }
+
+        // If a load is already in flight, await it instead of starting a new one.
+        if let existingTask = loadTask {
+            await existingTask.value
+            return
+        }
+
+        store.recentlyPlayedIsLoading = true
+        store.recentlyPlayedErrorMessage = nil
+
+        let task = Task {
+            defer {
+                self.loadTask = nil
+                self.store.recentlyPlayedIsLoading = false
+            }
+            await self.performLoad(accessToken: accessToken)
+        }
+        loadTask = task
+        await task.value
     }
 
     /// Force refresh recently played content
     func refresh(accessToken: String) async {
-        store.recentlyPlayedIsLoading = true
-        store.recentlyPlayedErrorMessage = nil
+        await loadRecentlyPlayed(accessToken: accessToken, forceRefresh: true)
+    }
 
+    private func performLoad(accessToken: String) async {
         do {
             let response = try await SpotifyAPI.fetchRecentlyPlayed(
                 accessToken: accessToken,
@@ -212,8 +242,6 @@ final class RecentlyPlayedService {
         } catch {
             store.recentlyPlayedErrorMessage = error.localizedDescription
         }
-
-        store.recentlyPlayedIsLoading = false
     }
 
     private func extractId(from uri: String) -> String {

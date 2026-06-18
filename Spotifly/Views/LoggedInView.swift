@@ -28,21 +28,15 @@ struct LoggedInView: View {
     @State private var deviceService: DeviceService
     @State private var navigationCoordinator: NavigationCoordinator
 
-    /// Persisted because it stores the in-flight favorites load task for dedup and
+    /// Persisted because they store in-flight load tasks for dedup and
     /// cancellation-resilience across view recreation.
     @State private var trackService: TrackService
+    @State private var recentlyPlayedService: RecentlyPlayedService
+    @State private var topItemsService: TopItemsService
 
     /// Services whose state lives entirely in AppStore.
-    private var recentlyPlayedService: RecentlyPlayedService {
-        RecentlyPlayedService(store: store)
-    }
-
     private var searchService: SearchService {
         SearchService(store: store)
-    }
-
-    private var topItemsService: TopItemsService {
-        TopItemsService(store: store)
     }
 
     init(authResult: SpotifyAuthResult, onLogout: @escaping () -> Void) {
@@ -64,6 +58,8 @@ struct LoggedInView: View {
         _deviceService = State(initialValue: DeviceService(store: store))
         _navigationCoordinator = State(initialValue: NavigationCoordinator(store: store))
         _trackService = State(initialValue: TrackService(store: store))
+        _recentlyPlayedService = State(initialValue: RecentlyPlayedService(store: store))
+        _topItemsService = State(initialValue: TopItemsService(store: store))
 
         playbackViewModel.setStore(store)
     }
