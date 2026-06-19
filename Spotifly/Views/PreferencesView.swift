@@ -180,10 +180,10 @@ struct InfoView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            Link(destination: URL(string: "https://github.com/ralph/homebrew-spotifly")!) {
+            Link(destination: URL(string: "https://github.com/ralph/Spotifly")!) {
                 HStack(spacing: 4) {
                     Image(systemName: "link")
-                    Text("github.com/ralph/homebrew-spotifly")
+                    Text("github.com/ralph/Spotifly")
                 }
                 .font(.callout)
             }
