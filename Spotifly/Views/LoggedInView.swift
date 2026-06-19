@@ -69,7 +69,6 @@ struct LoggedInView: View {
     @AppStorage("topItemsTimeRange") private var topItemsTimeRange: String = TopItemsTimeRange.mediumTerm.rawValue
 
     @State private var searchText = ""
-    @State private var searchFieldFocused = false
 
     enum BlockingState {
         case premiumRequired
@@ -142,6 +141,12 @@ struct LoggedInView: View {
                     contentRegion
                 }
                 .navigationSplitViewStyle(.automatic)
+                // Always-visible search field, attached to the NavigationSplitView
+                // itself (as in the original) — attaching it to an inner view inside
+                // the detail column does not surface the field in the window toolbar.
+                .searchable(text: $searchText)
+                .onSubmit(of: .search) { performSearch() }
+                .onChange(of: searchText) { _, newValue in handleSearchTextChange(newValue) }
                 .onChange(of: store.activeDeviceId) { _, newId in
                     if newId == nil || newId == store.ownDeviceId {
                         playbackViewModel.becameLocalActiveDevice()
@@ -156,7 +161,7 @@ struct LoggedInView: View {
             }
         }
         .background(windowState.isMiniPlayerMode ? Color(NSColor.windowBackgroundColor) : Color.clear)
-        .searchShortcuts(searchFieldFocused: $searchFieldFocused)
+        .searchShortcuts()
         .environment(session)
         .environment(connectionService)
         .environment(deviceService)
@@ -171,7 +176,6 @@ struct LoggedInView: View {
         .environment(albumService)
         .environment(artistService)
         .focusedValue(\.navigationSelection, navigationSelectionBinding)
-        .focusedValue(\.searchFieldFocused, $searchFieldFocused)
         .focusedValue(\.session, session)
         .focusedValue(\.recentlyPlayedService, recentlyPlayedService)
         .loggedInLifecycle(
@@ -212,14 +216,8 @@ struct LoggedInView: View {
         Group {
             if navigationCoordinator.needsThreeColumnLayout {
                 HSplitView {
-                    LoggedInContentRouterView(
-                        playbackViewModel: playbackViewModel,
-                        onLogout: handleLogout,
-                    )
-                    .frame(minWidth: 280, idealWidth: 380, maxWidth: 560)
-                    .toolbar {
-                        LoggedInContentToolbar(refreshAction: refreshCurrentSection)
-                    }
+                    contentRouter
+                        .frame(minWidth: 280, idealWidth: 380, maxWidth: 560)
 
                     LoggedInDetailRouterView(playbackViewModel: playbackViewModel)
                         .frame(maxWidth: .infinity)
@@ -228,23 +226,26 @@ struct LoggedInView: View {
                         }
                 }
             } else {
-                LoggedInContentRouterView(
-                    playbackViewModel: playbackViewModel,
-                    onLogout: handleLogout,
-                )
-                .toolbar {
-                    LoggedInContentToolbar(refreshAction: refreshCurrentSection)
-                }
+                contentRouter
             }
         }
-        .searchable(text: $searchText, isPresented: $searchFieldFocused)
-        .onSubmit(of: .search) { performSearch() }
-        .onChange(of: searchText) { _, newValue in handleSearchTextChange(newValue) }
         .overlay(alignment: .bottom) {
             NowPlayingBarView(
                 playbackViewModel: playbackViewModel,
                 windowState: windowState,
             )
+        }
+    }
+
+    /// The main content router with its content toolbar attached directly. Search is
+    /// attached to the NavigationSplitView (see mainAppView), not here.
+    private var contentRouter: some View {
+        LoggedInContentRouterView(
+            playbackViewModel: playbackViewModel,
+            onLogout: handleLogout,
+        )
+        .toolbar {
+            LoggedInContentToolbar(refreshAction: refreshCurrentSection)
         }
     }
 

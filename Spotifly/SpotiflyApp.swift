@@ -14,10 +14,6 @@ struct FocusedNavigationSelection: FocusedValueKey {
     typealias Value = Binding<NavigationItem?>
 }
 
-struct FocusedSearchFieldFocused: FocusedValueKey {
-    typealias Value = Binding<Bool>
-}
-
 struct FocusedSession: FocusedValueKey {
     typealias Value = SpotifySession
 }
@@ -30,11 +26,6 @@ extension FocusedValues {
     var navigationSelection: Binding<NavigationItem?>? {
         get { self[FocusedNavigationSelection.self] }
         set { self[FocusedNavigationSelection.self] = newValue }
-    }
-
-    var searchFieldFocused: Binding<Bool>? {
-        get { self[FocusedSearchFieldFocused.self] }
-        set { self[FocusedSearchFieldFocused.self] = newValue }
     }
 
     var session: SpotifySession? {
@@ -92,7 +83,6 @@ struct SpotiflyApp: App {
 
 struct SpotiflyCommands: Commands {
     @FocusedValue(\.navigationSelection) var navigationSelection
-    @FocusedValue(\.searchFieldFocused) var searchFieldFocused
     @FocusedValue(\.session) var session
     @FocusedValue(\.recentlyPlayedService) var recentlyPlayedService
 
@@ -162,7 +152,7 @@ struct SpotiflyCommands: Commands {
             Divider()
 
             Button("menu.search") {
-                searchFieldFocused?.wrappedValue = true
+                focusToolbarSearchField()
             }
             .keyboardShortcut("f", modifiers: .command)
 
