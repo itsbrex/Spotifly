@@ -78,8 +78,16 @@ struct LoggedInView: View {
 
     @State private var blockingState: BlockingState?
 
-    @State private var sidebarWidth: CGFloat = 0
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+
+    /// Preferred sidebar column width. The 2-column and 3-column layouts use two
+    /// distinct `NavigationSplitView` instances, so a width dragged in one is lost
+    /// when switching to a section that swaps to the other. Driving the column's
+    /// ideal width from this persisted value keeps the dragged width across the
+    /// swap (and across launches).
+    @AppStorage("sidebarColumnWidth") private var persistedSidebarWidth: Double = 250
+    private static let sidebarMinWidth: CGFloat = 180
+    private static let sidebarMaxWidth: CGFloat = 400
 
     private var navigationSelectionBinding: Binding<NavigationItem?> {
         Binding(
@@ -121,16 +129,31 @@ struct LoggedInView: View {
     }
 
     private var mainAppView: some View {
-        ZStack(alignment: .bottom) {
-            if !windowState.isMiniPlayerMode {
-                mainLayoutView
+        Group {
+            if windowState.isMiniPlayerMode {
+                NowPlayingBarView(
+                    playbackViewModel: playbackViewModel,
+                    windowState: windowState,
+                )
+            } else {
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    sidebarView()
+                } detail: {
+                    contentRegion
+                }
+                .navigationSplitViewStyle(.automatic)
+                .onChange(of: store.activeDeviceId) { _, newId in
+                    if newId == nil || newId == store.ownDeviceId {
+                        playbackViewModel.becameLocalActiveDevice()
+                    } else {
+                        playbackViewModel.becameRemoteActiveDevice(volumePercent: store.activeDevice?.volumePercent)
+                    }
+                }
+                .onChange(of: store.activeDevice?.volumePercent) { _, newPercent in
+                    guard let newPercent, store.activeDeviceId != store.ownDeviceId else { return }
+                    playbackViewModel.remoteDeviceVolumeUpdated(newPercent)
+                }
             }
-
-            NowPlayingBarView(
-                playbackViewModel: playbackViewModel,
-                windowState: windowState,
-            )
-            .padding(.leading, windowState.isMiniPlayerMode ? 0 : nowPlayingLeadingPadding)
         }
         .background(windowState.isMiniPlayerMode ? Color(NSColor.windowBackgroundColor) : Color.clear)
         .searchShortcuts(searchFieldFocused: $searchFieldFocused)
@@ -179,61 +202,49 @@ struct LoggedInView: View {
         }
     }
 
-    private var nowPlayingLeadingPadding: CGFloat {
-        columnVisibility == .detailOnly ? 0 : sidebarWidth + 8
-    }
-
-    private var mainLayoutView: some View {
+    /// The content region — the detail column of the single, stable two-column
+    /// NavigationSplitView. The 2- vs 3-column variation happens *here* (a single
+    /// section view, or a list + detail HSplitView), so the sidebar column is never
+    /// recreated and keeps its width across every section switch. The now-playing bar
+    /// is overlaid here too, so it centers over this region (column 2, or columns
+    /// 2+3) the way Apple Music does — no sidebar-width math.
+    private var contentRegion: some View {
         Group {
             if navigationCoordinator.needsThreeColumnLayout {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    sidebarView()
-                } content: {
+                HSplitView {
                     LoggedInContentRouterView(
                         playbackViewModel: playbackViewModel,
                         onLogout: handleLogout,
                     )
-                    .navigationSplitViewColumnWidth(min: 300, ideal: 450, max: 600)
+                    .frame(minWidth: 280, idealWidth: 380, maxWidth: 560)
                     .toolbar {
                         LoggedInContentToolbar(refreshAction: refreshCurrentSection)
                     }
-                } detail: {
+
                     LoggedInDetailRouterView(playbackViewModel: playbackViewModel)
+                        .frame(maxWidth: .infinity)
                         .toolbar {
                             LoggedInDetailToolbar(playbackViewModel: playbackViewModel)
                         }
-                        .searchable(text: $searchText, isPresented: $searchFieldFocused)
-                        .onSubmit(of: .search) { performSearch() }
-                        .onChange(of: searchText) { _, newValue in handleSearchTextChange(newValue) }
                 }
             } else {
-                NavigationSplitView(columnVisibility: $columnVisibility) {
-                    sidebarView()
-                } detail: {
-                    LoggedInContentRouterView(
-                        playbackViewModel: playbackViewModel,
-                        onLogout: handleLogout,
-                    )
-                    .toolbar {
-                        LoggedInContentToolbar(refreshAction: refreshCurrentSection)
-                    }
-                    .searchable(text: $searchText, isPresented: $searchFieldFocused)
-                    .onSubmit(of: .search) { performSearch() }
-                    .onChange(of: searchText) { _, newValue in handleSearchTextChange(newValue) }
+                LoggedInContentRouterView(
+                    playbackViewModel: playbackViewModel,
+                    onLogout: handleLogout,
+                )
+                .toolbar {
+                    LoggedInContentToolbar(refreshAction: refreshCurrentSection)
                 }
             }
         }
-        .navigationSplitViewStyle(.automatic)
-        .onChange(of: store.activeDeviceId) { _, newId in
-            if newId == nil || newId == store.ownDeviceId {
-                playbackViewModel.becameLocalActiveDevice()
-            } else {
-                playbackViewModel.becameRemoteActiveDevice(volumePercent: store.activeDevice?.volumePercent)
-            }
-        }
-        .onChange(of: store.activeDevice?.volumePercent) { _, newPercent in
-            guard let newPercent, store.activeDeviceId != store.ownDeviceId else { return }
-            playbackViewModel.remoteDeviceVolumeUpdated(newPercent)
+        .searchable(text: $searchText, isPresented: $searchFieldFocused)
+        .onSubmit(of: .search) { performSearch() }
+        .onChange(of: searchText) { _, newValue in handleSearchTextChange(newValue) }
+        .overlay(alignment: .bottom) {
+            NowPlayingBarView(
+                playbackViewModel: playbackViewModel,
+                windowState: windowState,
+            )
         }
     }
 
@@ -244,12 +255,18 @@ struct LoggedInView: View {
             hasSearchResults: store.searchResults != nil,
             userProfile: store.userProfile,
         )
+        .navigationSplitViewColumnWidth(
+            min: Self.sidebarMinWidth,
+            ideal: CGFloat(persistedSidebarWidth),
+            max: Self.sidebarMaxWidth,
+        )
         .onGeometryChange(for: CGFloat.self) { geometry in
             geometry.size.width
         } action: { newWidth in
-            guard sidebarWidth != newWidth else { return }
-            debugLog("SidebarWidth", "Updating sidebarWidth to: \(newWidth)")
-            sidebarWidth = newWidth
+            // Persist the dragged width for launch restore, ignoring the ~0 width
+            // reported while the sidebar is collapsed.
+            guard newWidth >= Self.sidebarMinWidth, Double(newWidth) != persistedSidebarWidth else { return }
+            persistedSidebarWidth = Double(newWidth)
         }
     }
 

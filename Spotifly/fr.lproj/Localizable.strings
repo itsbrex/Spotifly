@@ -23,6 +23,7 @@
 "nav.speakers" = "Appareils";
 "nav.library" = "Bibliothèque";
 "nav.profile" = "Profil";
+"nav.settings" = "Réglages";
 "nav.back_to %@" = "Retour à %@";
 "nav.back" = "Retour";
 "nav.forward_to %@" = "Suivant : %@";

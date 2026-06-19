@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if canImport(AppKit)
+    import AppKit
+#endif
 
 enum NavigationItem: Hashable, Identifiable {
     case startpage
@@ -66,11 +69,11 @@ enum NavigationItem: Hashable, Identifiable {
         case .playlists:
             "music.note.list"
         case .albums:
-            "square.stack.fill"
+            "opticaldisc"
         case .artists:
             "mic.fill"
         case .queue:
-            "list.bullet"
+            "text.line.first.and.arrowtriangle.forward"
         case .speakers:
             "hifispeaker.2.fill"
         case .profile:
@@ -99,9 +102,8 @@ struct SidebarView: View {
                     }
                 }
             } header: {
-                HStack {
-                    Image(systemName: "music.note.list")
-                        .foregroundStyle(.green)
+                HStack(spacing: 8) {
+                    AppBrandIcon(size: 22)
                     Text("app.name")
                         .font(.headline)
                 }
@@ -127,27 +129,65 @@ struct SidebarView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            Button {
-                selection = .profile
-            } label: {
-                HStack(spacing: 8) {
-                    ProfileAvatarView(userProfile: userProfile, size: 28)
-                    Text(userProfile?.displayName ?? String(localized: "nav.profile"))
-                        .lineLimit(1)
-                    Spacer()
+            VStack(spacing: 6) {
+                // Opens the native macOS Preferences window (Settings scene).
+                SettingsLink {
+                    Label("nav.settings", systemImage: "gearshape")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(selection == .profile ? AnyShapeStyle(.selection.opacity(0.8)) : AnyShapeStyle(.clear)),
-                )
+                .padding(.vertical, 4)
+
+                Button {
+                    selection = .profile
+                } label: {
+                    HStack(spacing: 8) {
+                        ProfileAvatarView(userProfile: userProfile, size: 28)
+                        Text(userProfile?.displayName ?? String(localized: "nav.profile"))
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(selection == .profile
+                                ? AnyShapeStyle(Color.accentColor.opacity(0.15))
+                                : AnyShapeStyle(Color(nsColor: .controlBackgroundColor))),
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(Color(nsColor: .separatorColor), lineWidth: 1),
+                    )
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             .padding(.horizontal, 8)
             .padding(.bottom, 8)
         }
         .navigationTitle("app.name")
+    }
+}
+
+// MARK: - App Brand Icon
+
+/// The app's real icon (the same one shown in the Dock), used as the sidebar brand mark.
+struct AppBrandIcon: View {
+    var size: CGFloat = 22
+
+    var body: some View {
+        #if canImport(AppKit)
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+        #else
+            Image(systemName: "music.note.list")
+                .foregroundStyle(.green)
+                .frame(width: size, height: size)
+        #endif
     }
 }
 
