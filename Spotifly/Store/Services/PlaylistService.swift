@@ -13,6 +13,7 @@ import Foundation
 final class PlaylistService {
     private let store: AppStore
     private var userPlaylistsTask: Task<Void, Error>?
+    private var playlistDetailsTasks: [String: Task<Playlist, Error>] = [:]
 
     init(store: AppStore) {
         self.store = store
@@ -91,34 +92,48 @@ final class PlaylistService {
 
     /// Fetch playlist details and tracks
     func fetchPlaylistDetails(playlistId: String, accessToken: String) async throws -> Playlist {
-        // Fetch details and tracks in parallel
-        async let detailsTask = SpotifyAPI.fetchPlaylistDetails(
-            accessToken: accessToken,
-            playlistId: playlistId,
-        )
-        async let tracksTask = SpotifyAPI.fetchPlaylistTracks(
-            accessToken: accessToken,
-            playlistId: playlistId,
-        )
+        // If already fetching this playlist, await the existing task instead of starting a new one.
+        // View recreation (e.g. the Playlists 2->3 column switch) can re-trigger the caller's
+        // .task before the first fetch completes.
+        if let existingTask = playlistDetailsTasks[playlistId] {
+            return try await existingTask.value
+        }
 
-        let (details, playlistTracks) = try await (detailsTask, tracksTask)
+        let task = Task<Playlist, Error> {
+            defer { self.playlistDetailsTasks[playlistId] = nil }
 
-        // Convert tracks to unified entities and store them
-        let tracks = playlistTracks.map { Track(from: $0) }
-        store.upsertTracks(tracks)
+            // Fetch details and tracks in parallel
+            async let detailsTask = SpotifyAPI.fetchPlaylistDetails(
+                accessToken: accessToken,
+                playlistId: playlistId,
+            )
+            async let tracksTask = SpotifyAPI.fetchPlaylistTracks(
+                accessToken: accessToken,
+                playlistId: playlistId,
+            )
 
-        // Calculate total duration
-        let totalDurationMs = tracks.reduce(0) { $0 + $1.durationMs }
+            let (details, playlistTracks) = try await (detailsTask, tracksTask)
 
-        // Create playlist with track IDs
-        let playlist = Playlist(
-            from: details,
-            trackIds: tracks.map(\.id),
-            totalDurationMs: totalDurationMs,
-        )
+            // Convert tracks to unified entities and store them
+            let tracks = playlistTracks.map { Track(from: $0) }
+            self.store.upsertTracks(tracks)
 
-        store.upsertPlaylist(playlist)
-        return playlist
+            // Calculate total duration
+            let totalDurationMs = tracks.reduce(0) { $0 + $1.durationMs }
+
+            // Create playlist with track IDs
+            let playlist = Playlist(
+                from: details,
+                trackIds: tracks.map(\.id),
+                totalDurationMs: totalDurationMs,
+            )
+
+            self.store.upsertPlaylist(playlist)
+            return playlist
+        }
+        playlistDetailsTasks[playlistId] = task
+
+        return try await task.value
     }
 
     /// Get tracks for a playlist (from store or fetch)

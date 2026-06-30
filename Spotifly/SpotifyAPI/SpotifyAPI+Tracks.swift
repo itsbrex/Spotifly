@@ -278,41 +278,48 @@ extension SpotifyAPI {
 
     // MARK: - Playlist Tracks
 
-    /// Fetches tracks for a specific playlist
+    /// Fetches tracks for a specific playlist, paginating through all items
     static func fetchPlaylistTracks(accessToken: String, playlistId: String) async throws -> [APITrack] {
-        let urlString = "\(baseURL)/playlists/\(playlistId)/tracks?limit=100&fields=items(added_at,track(id,name,uri,duration_ms,artists(id,name),album(id,name,images),external_urls(spotify)))&market=from_token"
+        var tracks: [APITrack] = []
+        var nextURLString: String? =
+            "\(baseURL)/playlists/\(playlistId)/items?limit=50&fields=items(added_at,track(id,name,uri,duration_ms,artists(id,name),album(id,name,images),external_urls(spotify))),next&market=from_token"
 
-        debugLog("SpotifyAPI", "[GET] \(urlString)")
+        while let urlString = nextURLString {
+            debugLog("SpotifyAPI", "[GET] \(urlString)")
 
-        guard let url = URL(string: urlString) else {
-            throw SpotifyAPIError.invalidURI
-        }
+            guard let url = URL(string: urlString) else {
+                throw SpotifyAPIError.invalidURI
+            }
 
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+            var request = URLRequest(url: url)
+            request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
 
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw SpotifyAPIError.invalidResponse
-        }
-
-        switch httpResponse.statusCode {
-        case 200:
-            do {
-                let decoded = try JSONDecoder().decode(PlaylistItemsCodable.self, from: data)
-                return decoded.items.compactMap { item in
-                    item.track?.toAPITrack(addedAt: item.addedAt)
-                }
-            } catch {
+            guard let httpResponse = response as? HTTPURLResponse else {
                 throw SpotifyAPIError.invalidResponse
             }
-        case 401:
-            throw SpotifyAPIError.unauthorized
-        case 404:
-            throw SpotifyAPIError.notFound
-        default:
-            try throwAPIError(data: data, statusCode: httpResponse.statusCode)
+
+            switch httpResponse.statusCode {
+            case 200:
+                do {
+                    let decoded = try JSONDecoder().decode(PlaylistItemsCodable.self, from: data)
+                    tracks += decoded.items.compactMap { item in
+                        item.track?.toAPITrack(addedAt: item.addedAt)
+                    }
+                    nextURLString = decoded.next
+                } catch {
+                    throw SpotifyAPIError.invalidResponse
+                }
+            case 401:
+                throw SpotifyAPIError.unauthorized
+            case 404:
+                throw SpotifyAPIError.notFound
+            default:
+                try throwAPIError(data: data, statusCode: httpResponse.statusCode)
+            }
         }
+
+        return tracks
     }
 }

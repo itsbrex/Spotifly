@@ -559,6 +559,7 @@ struct AlbumTracksCodable: Decodable {
 /// Playlist items
 struct PlaylistItemsCodable: Decodable {
     let items: [PlaylistItemWrapperCodable]
+    let next: String?
 
     struct PlaylistItemWrapperCodable: Decodable {
         let addedAt: String?
