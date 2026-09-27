@@ -1,0 +1,426 @@
+//
+//  SPClient.swift
+//  SwiftLibrespot
+//
+//  HTTP client for Spotify spclient endpoints
+//  Handles track metadata and CDN URL resolution
+//
+
+import Foundation
+
+/// HTTP client for Spotify spclient (storage/metadata) endpoints
+public actor SPClient {
+    // MARK: - Properties
+
+    /// Produces a current bearer token on demand, so long-lived sessions
+    /// survive the hour-long lifetime of any single token.
+    private let tokenProvider: @Sendable () async throws -> String
+    private let clientTokenProvider: (@Sendable () async throws -> String)?
+    private var spclientHost: String?
+    private let deviceId: String
+    /// Market and catalogue the batched-metadata requests must name.
+    private var countryCode: String?
+    private var catalogue = "premium"
+
+    public func setCountryCode(_ code: String?) {
+        countryCode = code
+    }
+
+    // MARK: - Initialization
+
+    public init(
+        tokenProvider: @escaping @Sendable () async throws -> String,
+        clientTokenProvider: (@Sendable () async throws -> String)? = nil,
+        spclientHost: String? = nil,
+        deviceId: String,
+    ) {
+        self.tokenProvider = tokenProvider
+        self.clientTokenProvider = clientTokenProvider
+        self.spclientHost = spclientHost
+        self.deviceId = deviceId
+
+        debugLog("SPClient", "Initialized")
+    }
+
+    /// Signs like the desktop client does: these hosts are no public API, and
+    /// the requests they answer are the ones shaped like the client's own —
+    /// bearer for the user, client token for the application, plus the
+    /// platform/origin markers.
+    private func authorizedRequest(url: URL, accept: String) async throws -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("OSX_ARM64", forHTTPHeaderField: "App-Platform")
+        request.setValue("https://xpui.app.spotify.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://xpui.app.spotify.com/", forHTTPHeaderField: "Referer")
+
+        let token = try await tokenProvider()
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let clientTokenProvider {
+            try await request.setValue(clientTokenProvider(), forHTTPHeaderField: "Client-Token")
+        }
+        request.setValue(accept, forHTTPHeaderField: "Accept")
+        return request
+    }
+
+    // MARK: - Track Metadata
+
+    /// Track metadata containing file information
+    public struct TrackMetadata: Sendable {
+        public let gid: Data
+        public let name: String
+        public let durationMs: Int
+        public var files: [AudioFile]
+
+        public struct AudioFile: Sendable {
+            public let fileId: Data
+            public let format: AudioFormat
+        }
+
+        public enum AudioFormat: Int, Sendable {
+            case oggVorbis96 = 0
+            case oggVorbis160 = 1
+            case oggVorbis320 = 2
+            case mp3256 = 3
+            case mp3320 = 4
+            case mp3160 = 5
+            case mp3096 = 6
+            case mp3160Enc = 7
+            case aac24 = 8
+            case aac48 = 9
+            case flac = 10
+            case unknown = -1
+
+            /// Nominal bitrate in kbps, for matching a quality preference.
+            var kbps: Int {
+                switch self {
+                case .oggVorbis96, .mp3096: 96
+                case .oggVorbis160, .mp3160, .mp3160Enc: 160
+                case .oggVorbis320, .mp3320: 320
+                case .mp3256: 256
+                case .aac24: 24
+                case .aac48: 48
+                case .flac: 1411
+                case .unknown: 0
+                }
+            }
+        }
+    }
+
+    /// Get track metadata from spclient
+    /// This fetches file IDs needed for audio key requests
+    public func getTrackMetadata(trackId: Data) async throws -> TrackMetadata {
+        let host = spclientHost ?? "spclient.wg.spotify.com"
+        let gidHex = trackId.hexString
+
+        let url = URL(string: "https://\(host)/metadata/4/track/\(gidHex)")!
+
+        debugLog("SPClient", "[GET] \(url)")
+
+        let request = try await authorizedRequest(url: url, accept: "application/x-protobuf")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LibrespotError.cdnError("Invalid response")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            debugLog("SPClient", "Track metadata request failed: HTTP \(httpResponse.statusCode), body: \(String(data: data.prefix(200), encoding: .utf8) ?? "?")")
+            throw LibrespotError.trackNotFound(gidHex)
+        }
+
+        return Self.parseTrackMetadata(data, gid: trackId)
+    }
+
+    // MARK: - Extended Metadata (audio files)
+
+    /// Fetches a track's playable audio files via the extended-metadata
+    /// endpoint. `/metadata/4` answers with a stub (title, duration, no
+    /// files) these days — the files only come from here.
+    ///
+    /// Request: `BatchedEntityRequest { 1: header, 2: { 1: uri, 2: { 1: TRACK_V4(10) } } }`
+    /// Response: nested arrays whose leaf is a `google.protobuf.Any` wrapping
+    /// the full `Track`.
+    public func getAudioFiles(entityUri: String) async throws -> [TrackMetadata.AudioFile] {
+        let host = spclientHost ?? "spclient.wg.spotify.com"
+        let url = URL(string: "https://\(host)/extended-metadata/v0/extended-metadata")!
+
+        debugLog("SPClient", "[POST] extended-metadata \(entityUri)")
+
+        var request = try await authorizedRequest(url: url, accept: "application/x-protobuf")
+        request.httpMethod = "POST"
+        request.setValue("application/x-protobuf", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Self.buildAudioFilesRequest(
+            entityUri: entityUri,
+            country: countryCode,
+            catalogue: catalogue,
+        )
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw LibrespotError.cdnError("Invalid extended-metadata response")
+        }
+
+        guard httpResponse.statusCode == 200 else {
+            debugLog("SPClient", "Extended metadata failed: HTTP \(httpResponse.statusCode), body: \(String(data: data.prefix(160), encoding: .utf8) ?? "?")")
+            throw LibrespotError.trackNotFound(entityUri)
+        }
+
+        return Self.parseAudioFilesResponse(data)
+    }
+
+    /// Encodes the BatchedEntityRequest asking for one entity's `Track`.
+    nonisolated static func buildAudioFilesRequest(entityUri: String, country: String?, catalogue: String) -> Data {
+        ProtobufWriter.message {
+            // Header naming market + catalogue; without it the service
+            // answers each entity with 410 Gone.
+            $0.message(field: 1) { header in
+                if let country {
+                    header.string(field: 1, country)
+                }
+                header.string(field: 2, catalogue)
+            }
+            // EntityRequest { 1: uri, 2: query }. One EntityRequest may carry
+            // several ExtensionQuery entries; some tracks only expose files
+            // under one of the two kinds. Single TRACK_V4 query: batching a
+            // second kind alongside it made the service answer with one 410
+            // array instead of either payload.
+            $0.message(field: 2) { entityRequest in
+                entityRequest.string(field: 1, entityUri)
+                entityRequest.message(field: 2) { $0.varint(field: 1, 10) } // TRACK_V4
+            }
+        }
+    }
+
+    /// Walks the response nesting down to the wrapped `Track`s.
+    nonisolated static func parseAudioFilesResponse(_ data: Data) -> [TrackMetadata.AudioFile] {
+        var result: [TrackMetadata.AudioFile] = []
+        var arrayCount = 0
+        var dataCount = 0
+
+        // BatchedExtensionResponse { 2: arrays[] }
+        for array in ProtobufReader.fields(in: data) where array.number == 2 {
+            arrayCount += 1
+            // EntityExtensionDataArray { 2: kind varint, 3: datas[] }
+            for entry in array.fields where entry.number == 3 {
+                dataCount += 1
+                // EntityExtensionData { 1: header{1 status}, 3: extension_data = Any }
+                for any in entry.fields where any.number == 3 {
+                    // google.protobuf.Any { 2: value }, the value a full `Track`
+                    for value in any.fields where value.number == 2 {
+                        result += playableFiles(inTrack: value.fields, knownFormatsOnly: true)
+                    }
+                }
+            }
+        }
+
+        debugLog("SPClient", "Extended metadata: \(arrayCount) array(s), \(dataCount) data(s), yielded \(result.count) file(s)")
+        return result
+    }
+
+    // MARK: - CDN URL Resolution
+
+    /// CDN URL information for downloading audio
+    public struct CDNUrl: Sendable {
+        public let url: URL
+        public let expiresAt: Date?
+    }
+
+    /// Resolve CDN URL for an audio file
+    public func resolveCDNUrl(fileId: Data) async throws -> CDNUrl {
+        let host = spclientHost ?? "spclient.wg.spotify.com"
+        let fileIdHex = fileId.hexString
+
+        let url = URL(string: "https://\(host)/storage-resolve/files/audio/interactive/\(fileIdHex)?alt=json")!
+
+        debugLog("SPClient", "[GET] storage-resolve for \(fileIdHex.prefix(16))…")
+
+        let request = try await authorizedRequest(url: url, accept: "application/json")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200
+        else {
+            throw LibrespotError.cdnError("Storage resolve failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+        }
+
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let cdnUrls = json["cdnurl"] as? [String],
+              let firstUrl = cdnUrls.first,
+              let cdnUrl = URL(string: firstUrl)
+        else {
+            throw LibrespotError.cdnError("Invalid storage resolve response")
+        }
+
+        debugLog("SPClient", "Resolved CDN URL: \(cdnUrl.host ?? "?")")
+
+        return CDNUrl(url: cdnUrl, expiresAt: nil)
+    }
+
+    /// Parses the `Track` message: `{2 name, 7 duration, 12 files[], 13 alternative[]}`.
+    nonisolated static func parseTrackMetadata(_ data: Data, gid: Data) -> TrackMetadata {
+        let fields = ProtobufReader.fields(in: data)
+        let name = fields.last(2)?.string ?? ""
+        // `sint32` in metadata.proto. Read as a plain varint it was doubled:
+        // 403518 ms for a track the decoder counts 8897582 frames of, 201.8 s.
+        let duration = fields.last(7).map { Int(truncatingIfNeeded: $0.sint64) } ?? 0
+        let files = playableFiles(inTrack: fields, knownFormatsOnly: false)
+
+        debugLog("SPClient", "Parsed track: \(name), duration=\(duration)ms, files=\(files.count)")
+
+        return TrackMetadata(gid: gid, name: name, durationMs: duration, files: files)
+    }
+
+    /// A `Track`'s playable files. They sit at `Track.file` (12); a relinked
+    /// recording answers with an empty list plus its playable copy under
+    /// `Track.alternative` (13) — which is the normal case for
+    /// market-substituted tracks — so the alternatives' files stand in when
+    /// the track has none of its own.
+    ///
+    /// `knownFormatsOnly` drops the formats `AudioFormat` does not name before
+    /// that choice is made, as the extended-metadata path always has; the
+    /// `/metadata/4` path keeps them, as `.unknown`.
+    private nonisolated static func playableFiles(
+        inTrack fields: [ProtobufField],
+        knownFormatsOnly: Bool,
+    ) -> [TrackMetadata.AudioFile] {
+        func files(of track: [ProtobufField]) -> [TrackMetadata.AudioFile] {
+            track.filter { $0.number == 12 }
+                .compactMap { audioFile($0.fields) }
+                .filter { !knownFormatsOnly || $0.format != .unknown }
+        }
+
+        let own = files(of: fields)
+        guard own.isEmpty else { return own }
+        return fields.filter { $0.number == 13 }.flatMap { files(of: $0.fields) }
+    }
+
+    /// `AudioFile { 1: file_id, 2: format }`, or nil without a file id. A
+    /// missing format, or one `AudioFormat` does not name, reads as `.unknown`.
+    private nonisolated static func audioFile(_ fields: [ProtobufField]) -> TrackMetadata.AudioFile? {
+        guard let fileId = fields.last(1)?.bytes else { return nil }
+        let format = fields.last(2).flatMap { TrackMetadata.AudioFormat(rawValue: Int(truncatingIfNeeded: $0.value)) }
+        return TrackMetadata.AudioFile(fileId: fileId, format: format ?? .unknown)
+    }
+
+    // MARK: - Context Resolution
+
+    /// An ordered track list resolved from a context uri.
+    public struct ResolvedContext: Sendable {
+        public let uri: String
+        public let tracks: [String]
+    }
+
+    /// Resolves an album, playlist, artist, or station uri into its tracks,
+    /// via spclient's context resolver — the same source Spotify's own
+    /// clients use, and one that handles every context shape uniformly.
+    public func resolveContext(_ contextUri: String) async throws -> ResolvedContext {
+        let host = spclientHost ?? "spclient.wg.spotify.com"
+        let encodedUri = contextUri.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? contextUri
+
+        debugLog("SPClient", "Resolving context: \(contextUri)")
+
+        var allTracks: [String] = []
+        var nextPage: String? = "/context-resolve/v1/\(encodedUri)?device_id=\(deviceId)"
+        var pageLimit = 10
+
+        while let path = nextPage, pageLimit > 0 {
+            pageLimit -= 1
+
+            let url = URL(string: "https://\(host)\(path)")!
+            debugLog("SPClient", "[GET] \(url.absoluteString.prefix(120))")
+            debugLog("SPClient", "Signing context request…")
+            let request = try await authorizedRequest(url: url, accept: "application/x-protobuf")
+            debugLog("SPClient", "Sending context request…")
+
+            let (data, response) = try await Self.withTimeout(seconds: 20) {
+                try await URLSession.shared.data(for: request)
+            }
+            debugLog("SPClient", "Context response received")
+
+            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                debugLog("SPClient", "Context resolve FAILED: HTTP \(status), body: \(String(data: data.prefix(200), encoding: .utf8) ?? "?")")
+                throw LibrespotError.cdnError("Context resolve failed: HTTP \(status)")
+            }
+
+            #if DEBUG
+                debugLog("SPClient", "Context response \(data.count) bytes: \(data.prefix(400).map { String(format: "%02x", $0) }.joined())")
+            #endif
+            let report = Self.parseContextReport(data)
+            allTracks.append(contentsOf: report.tracks)
+            nextPage = report.nextPageUrl.map { "/context-resolve/v1/\($0)" }
+        }
+
+        debugLog("SPClient", "Context resolved: \(allTracks.count) track(s)")
+
+        return ResolvedContext(uri: contextUri, tracks: allTracks)
+    }
+
+    /// Parses the context resolver's answer. Despite the protobuf `Accept`
+    /// header the endpoint replies **JSON**: `{metadata, pages: [{tracks:
+    /// [{uri}], next_page_url}], uri}`.
+    ///
+    /// The top-level `uri` is the context's own, not a track's, so nothing
+    /// here can say which track to start at. A start index was computed from
+    /// it and was always 0 — the guard ran after the append, and a context uri
+    /// never matches a track uri anyway. Removed rather than guessed at: which
+    /// field, if any, carries a resume point has to come off a real response.
+    private nonisolated static func parseContextReport(_ data: Data) -> (tracks: [String], nextPageUrl: String?) {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ([], nil)
+        }
+
+        var tracks: [String] = []
+        var nextPageUrl: String?
+
+        let pages = json["pages"] as? [[String: Any]] ?? []
+        for page in pages {
+            let pageTracks = page["tracks"] as? [[String: Any]] ?? []
+            tracks.append(contentsOf: pageTracks.compactMap { $0["uri"] as? String })
+            if nextPageUrl == nil {
+                nextPageUrl = page["next_page_url"] as? String
+            }
+        }
+
+        return (tracks, nextPageUrl)
+    }
+
+    // MARK: - Timeout
+
+    private nonisolated static func withTimeout<T: Sendable>(
+        seconds: Double,
+        _ body: @escaping @Sendable () async throws -> T,
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await body() }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw LibrespotError.timeout("Request timed out after \(seconds)s")
+            }
+            do {
+                let result = try await group.next()!
+                group.cancelAll()
+                return result
+            } catch {
+                // Without this, a thrown deadline awaits the request child —
+                // which only ends once URLSession notices its own timeout.
+                group.cancelAll()
+                throw error
+            }
+        }
+    }
+}
+
+// MARK: - Format Helpers
+
+extension SPClient.TrackMetadata.AudioFormat {
+    /// Whether the format is Ogg Vorbis — the only family this app decodes.
+    nonisolated var isVorbis: Bool {
+        switch self {
+        case .oggVorbis96, .oggVorbis160, .oggVorbis320: true
+        default: false
+        }
+    }
+}
