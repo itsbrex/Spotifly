@@ -348,6 +348,13 @@ public actor DealerConnection {
             {
                 let command = Self.parseCommand(endpoint: commandJson["endpoint"] as? String ?? "", json: commandJson)
                 debugLog("DealerConnection", "Command received: \(commandJson["endpoint"] ?? "?")")
+                // Whole, so a command this app does not handle yet can be
+                // implemented from what Spotify actually sends.
+                if case .unknown = command,
+                   let raw = try? JSONSerialization.data(withJSONObject: commandJson, options: [.sortedKeys])
+                {
+                    debugLog("DealerConnection", "Unhandled command: \(String(decoding: raw, as: UTF8.self))")
+                }
                 commandSubject.send(SpircRemoteCommand(command: command, messageId: messageId, sentByDeviceId: sentBy))
             } else if uri.starts(with: "hm://connect-state/v1/connect/volume"),
                       let volume = json["volume"] as? NSNumber
@@ -574,6 +581,16 @@ public actor DealerConnection {
         case "add_to_queue":
             let track = json["track"] as? [String: Any]
             return .addToQueue(uri: track?["uri"] as? String ?? "")
+
+        case "set_queue":
+            // Without its list this would read as an emptied queue.
+            guard let next = json["next_tracks"] as? [[String: Any]] else {
+                return .unknown("set_queue without next_tracks")
+            }
+            let queued = next.prefix { $0["provider"] as? String != "context" }
+                .compactMap { $0["uri"] as? String }
+                .filter { !$0.isEmpty }
+            return .setQueue(queuedUris: queued)
 
         case "transfer":
             // Sent to the device taking over. `data` is the base64 TransferState:
