@@ -209,6 +209,20 @@ public actor LibrespotClient {
         publishConnectionState(connected: true)
 
         debugLog("LibrespotClient", "Initialization complete")
+
+        #if DEBUG
+            // SPOTIFLY_DEBUG_DROP_AP_AFTER=<seconds>: drop the accesspoint socket
+            // that long after login. Spotify resets it now and then, and nothing
+            // on its side can be asked to, so this is how a recovery is tested.
+            if let after = ProcessInfo.processInfo.environment["SPOTIFLY_DEBUG_DROP_AP_AFTER"],
+               let seconds = Double(after)
+            {
+                Task {
+                    try? await Task.sleep(for: .seconds(seconds))
+                    await session?.accesspoint?.debugDropConnection()
+                }
+            }
+        #endif
     }
 
     /// Chooses what to log in with: the stored reusable login if present,
@@ -298,11 +312,8 @@ public actor LibrespotClient {
         guard let session, let credentials = await session.currentCredentials, let tokenProvider else { return }
 
         // What to come back to, read before reconnecting: the new session's
-        // first cluster can arrive while it is still being set up. A paused
-        // track's place is the one it was paused at; the pipeline's position
-        // is zero once it has been stopped, as before sleep.
+        // first cluster can arrive while it is still being set up.
         let was = localState
-        let resumeAt = was?.isPlaying == true ? positionCache : UInt64(max(0, was?.positionMs ?? 0))
 
         do {
             _ = try await session.connect(credentials: credentials) { [tokenProvider] in
@@ -312,16 +323,19 @@ public actor LibrespotClient {
                 return try await clientTokenProvider()
             }
 
-            // A rebuilt session carries a fresh accesspoint socket; the old
-            // pipeline would keep asking the corpse for audio keys.
             await attachTransport()
 
-            // attachTransport hands back an empty pipeline, so without this the
-            // session comes back reporting connected while nothing plays and
-            // resume() resumes silence. Reload where we were, paused if it was:
-            // only a playing track used to come back, so after a wake, or a
-            // dropped connection while paused, play did nothing at all.
-            if let was, let uri = playbackQueue.currentUri {
+            // A reset leaves the track playing from memory, or loading, as a
+            // Next pressed meanwhile does, which waits for the new socket. The
+            // rebuilt session only has to be told: it registered with no active
+            // device. Sleep stopped the pipeline, so reload where we were, paused
+            // if it was; before sleep, `disconnect()` kept that place in
+            // `localState`.
+            if let audioPipeline, await !audioPipeline.isStopped {
+                debugLog("LibrespotClient", "Recovery kept the pipeline's track")
+                await publishPlaybackStateRefresh()
+            } else if let was, let uri = playbackQueue.currentUri {
+                let resumeAt = UInt64(max(0, was.positionMs))
                 debugLog("LibrespotClient", "Recovery reloading \(uri) at \(resumeAt)ms\(was.isPlaying ? "" : ", paused")")
                 try? await audioPipeline?.playTrack(uri: uri, positionMs: resumeAt, paused: !was.isPlaying)
             }
@@ -334,35 +348,43 @@ public actor LibrespotClient {
         }
     }
 
-    /// Creates SPClient and the audio pipeline against the current session.
+    /// Creates SPClient and the audio pipeline for a new session. A reconnect
+    /// keeps both: neither holds the socket, and the pipeline asks the session
+    /// for it each time it needs an audio key.
     private func attachTransport() async {
-        guard let tokenProvider else { return }
-        let host = await session?.spclientHost
+        guard let tokenProvider, let session else { return }
 
-        spclient = SPClient(
-            tokenProvider: { [tokenProvider] in try await tokenProvider() },
-            clientTokenProvider: { [clientTokenProvider] in
-                guard let clientTokenProvider else { throw LibrespotError.notInitialized }
-                return try await clientTokenProvider()
-            },
-            spclientHost: host,
-            deviceId: deviceInfo.deviceId,
-        )
+        if spclient == nil {
+            spclient = await SPClient(
+                tokenProvider: { [tokenProvider] in try await tokenProvider() },
+                clientTokenProvider: { [clientTokenProvider] in
+                    guard let clientTokenProvider else { throw LibrespotError.notInitialized }
+                    return try await clientTokenProvider()
+                },
+                spclientHost: session.spclientHost,
+                deviceId: deviceInfo.deviceId,
+            )
+        }
 
-        guard let accesspoint = await session?.accesspoint else { return }
+        guard let accesspoint = await session.accesspoint else { return }
 
         await spclient?.setCountryCode(accesspoint.lastCountryCode)
 
-        await audioPipeline?.stop()
+        guard audioPipeline == nil else { return }
+
         pipelineSubscriptions.removeAll()
 
-        let pipeline = AudioPipeline(accesspoint: accesspoint, spclient: spclient, sink: SpotifyPlayer.audioRenderer)
+        let pipeline = AudioPipeline(
+            audioKeyProvider: AudioKeyProvider { [weak session] in await session?.connectedAccesspoint },
+            spclient: spclient,
+            sink: SpotifyPlayer.audioRenderer,
+        )
         audioPipeline = pipeline
         subscribeToPipeline(pipeline)
         await applyPlaybackSettings()
 
         // A new pipeline hears of the next track only at the next track
-        // change, so after a recovery the first boundary was not gapless.
+        // change, so the first boundary after a rebuild was not gapless.
         announceNextTrack()
     }
 
@@ -1238,7 +1260,8 @@ public actor LibrespotClient {
     }
 
     /// Re-emits the last playback state — used after option changes (shuffle,
-    /// repeat) where only the flags moved.
+    /// repeat) where only the flags moved, and after a reconnect that kept the
+    /// loaded track, for the session that registered without it.
     ///
     /// Reports to the cluster as well: an option is part of the player state
     /// other devices render, so a shuffle toggled here has to show up on the

@@ -24,7 +24,8 @@ import Foundation
 actor AudioPipeline {
     // MARK: - Dependencies
 
-    private let accesspoint: Accesspoint
+    /// Asks the session for its socket each time, so a reconnect, which
+    /// replaces the socket, leaves the pipeline as it is.
     private let audioKeyProvider: AudioKeyProvider
     private let spclient: SPClient?
     private let sink: AudioRenderer
@@ -139,12 +140,17 @@ actor AudioPipeline {
 
     // MARK: - Initialization
 
-    init(accesspoint: Accesspoint, spclient: SPClient?, sink: AudioRenderer) {
-        self.accesspoint = accesspoint
+    init(audioKeyProvider: AudioKeyProvider, spclient: SPClient?, sink: AudioRenderer) {
+        self.audioKeyProvider = audioKeyProvider
         self.spclient = spclient
         self.sink = sink
-        audioKeyProvider = AudioKeyProvider(accesspoint: accesspoint)
         debugLog("AudioPipeline", "Initialized")
+    }
+
+    /// Whether nothing is loaded or loading: after a stop, and before the
+    /// first track.
+    var isStopped: Bool {
+        playbackStateSubject.value == .idle
     }
 
     // MARK: - Settings
@@ -327,14 +333,17 @@ actor AudioPipeline {
 
         // Independent requests on different transports — the key over the
         // accesspoint socket, the url over HTTP — so neither waits for the other.
+        // Both are in before the download starts: a key refused by a dead
+        // socket would otherwise cost the whole file first.
         async let key = audioKeyProvider.getKey(fileId: file.fileId, trackId: trackId)
         async let cdnUrl = spclient.resolveCDNUrl(fileId: file.fileId)
+        let (fileKey, source) = try await (key, cdnUrl)
 
-        let encrypted = try await Self.downloadWholeFile(cdnUrl.url)
+        let encrypted = try await Self.downloadWholeFile(source.url)
 
         // The whole file is ciphertext, keystream from block 0. Nothing is
         // skipped: the stream opens with the Ogg capture pattern once decrypted.
-        let decrypted = try await AESDecryptor(key: key).decrypt(encrypted)
+        let decrypted = try await AESDecryptor(key: fileKey).decrypt(encrypted)
         let vorbisStream = Self.vorbisStreamOffset(decrypted)
         debugLog("AudioPipeline", "Decrypted \(decrypted.count) bytes; Vorbis begins at \(vorbisStream.offset) after \(vorbisStream.skippedPages) Spotify page(s)")
 
