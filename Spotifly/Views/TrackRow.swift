@@ -265,8 +265,7 @@ struct TrackRow: View {
             do {
                 try await trackService.toggleFavorite(trackId: track.id)
             } catch {
-                // Error is handled by optimistic rollback in TrackService
-                playbackViewModel.errorMessage = "Failed to update favorite: \(error.localizedDescription)"
+                playbackViewModel.errorMessage = String(localized: "error.update_favorite \(error.localizedDescription)")
             }
 
             isTogglingFavorite = false
@@ -339,7 +338,7 @@ struct NewPlaylistPrompt: ViewModifier {
                 )
                 onAdded()
             } catch {
-                playbackViewModel.errorMessage = "Failed to create playlist: \(error.localizedDescription)"
+                playbackViewModel.errorMessage = String(localized: "error.create_playlist \(error.localizedDescription)")
             }
         }
     }

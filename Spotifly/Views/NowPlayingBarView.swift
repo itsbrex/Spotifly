@@ -206,9 +206,18 @@ struct NowPlayingBarView: View {
             .clipShape(.rect(cornerRadius: 4))
     }
 
+    /// The track's title and artist, or `PlaybackViewModel.errorMessage` in their place while
+    /// it is set — the one place it is shown. Two caption lines fit the same height, and the
+    /// mini player has no room above the bar for a banner.
     private var trackInfo: some View {
         VStack(alignment: .leading, spacing: 2) {
-            if let track = currentTrack {
+            if let message = playbackViewModel.errorMessage {
+                Label(message, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+                    .help(message)
+            } else if let track = currentTrack {
                 Text(track.name)
                     .font(.subheadline.weight(.medium))
                     .lineLimit(1)
@@ -218,6 +227,7 @@ struct NowPlayingBarView: View {
                     .lineLimit(1)
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: playbackViewModel.errorMessage)
     }
 
     private var playbackControls: some View {
@@ -372,7 +382,7 @@ struct NowPlayingBarView: View {
                 do {
                     try await trackService.toggleFavorite(trackId: trackId)
                 } catch {
-                    playbackViewModel.errorMessage = "Failed to update favorite: \(error.localizedDescription)"
+                    playbackViewModel.errorMessage = String(localized: "error.update_favorite \(error.localizedDescription)")
                 }
             }
         } label: {
