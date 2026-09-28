@@ -14,9 +14,6 @@ import SwiftUI
 private struct ConnectionStatusRow: View {
     let label: LocalizedStringKey
     let isConnected: Bool
-    /// Shown in place of the connected/disconnected text where the row has something more
-    /// specific to say — a connection id, or how far Spirc got.
-    let detail: String?
 
     var body: some View {
         HStack(spacing: 8) {
@@ -29,17 +26,9 @@ private struct ConnectionStatusRow: View {
 
             Spacer()
 
-            if let detail {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } else {
-                Text(isConnected ? String(localized: "connection.connected") : String(localized: "connection.disconnected"))
-                    .font(.caption)
-                    .foregroundStyle(isConnected ? .green : .secondary)
-            }
+            Text(isConnected ? String(localized: "connection.connected") : String(localized: "connection.disconnected"))
+                .font(.caption)
+                .foregroundStyle(isConnected ? .green : .secondary)
         }
     }
 }
@@ -114,35 +103,26 @@ private struct UptimeDisplay: View {
 
 /// Main dashboard showing librespot connection status
 struct ConnectionStatusView: View {
-    @Environment(AppStore.self) private var store
+    @Environment(PlayerModel.self) private var player
     var onReconnect: (@Sendable () async -> Void)?
     @State private var isReconnecting = false
 
     var body: some View {
-        if let connection = store.connection {
+        if let connection = player.connection {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
                     Text("connection.status")
                         .font(.headline)
                     Spacer()
-                    statusBadge(isConnected: connection.isConnected && connection.spircReady)
+                    statusBadge(isConnected: connection.isConnected)
                 }
 
                 Divider()
 
-                VStack(spacing: 8) {
-                    ConnectionStatusRow(
-                        label: "connection.session",
-                        isConnected: connection.isConnected,
-                        detail: connection.connectionId.map { truncateId($0) },
-                    )
-
-                    ConnectionStatusRow(
-                        label: "connection.spirc",
-                        isConnected: connection.spircReady,
-                        detail: connection.spircReady ? String(localized: "connection.spirc_ready") : String(localized: "connection.spirc_not_ready"),
-                    )
-                }
+                ConnectionStatusRow(
+                    label: "connection.session",
+                    isConnected: connection.isConnected,
+                )
 
                 Divider()
 

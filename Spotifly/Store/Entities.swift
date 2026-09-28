@@ -307,7 +307,7 @@ struct UserProfile {
 // MARK: - Device
 
 /// Spotify Connect device.
-struct Device: Identifiable, Hashable, Encodable {
+nonisolated struct Device: Identifiable, Hashable, Encodable {
     let id: String
     let name: String
     let type: String
@@ -331,14 +331,12 @@ struct Device: Identifiable, Hashable, Encodable {
 // MARK: - Spotify Connection
 
 /// Our app's connection state to Spotify (single source of truth for connection info).
-/// Converted from LibrespotConnectionState in `ConnectionService`.
+/// Converted from LibrespotConnectionState in `PlayerModel`.
 struct SpotifyConnection: Equatable, Encodable {
     let deviceId: String?
     let deviceName: String
     let isConnected: Bool
-    let connectionId: String?
     let connectedSince: Date?
-    let spircReady: Bool
     let reconnectAttempts: UInt32
     let lastError: String?
 }

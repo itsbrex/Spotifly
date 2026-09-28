@@ -18,6 +18,9 @@ final class PlaybackViewModel {
     /// Shared singleton instance - ensures only one timer runs
     static let shared = PlaybackViewModel()
 
+    /// What the player last published.
+    private let player = PlayerModel.shared
+
     /// Reference to AppStore for reading current track metadata (set by LoggedInView)
     private weak var store: AppStore?
 
@@ -105,10 +108,6 @@ final class PlaybackViewModel {
     }
 
     private var lastAlbumArtURL: String?
-    private var connectionStateSubscription: AnyCancellable?
-    private var playbackStateSubscription: AnyCancellable?
-    private var volumeSubscription: AnyCancellable?
-    private var loadingSubscription: AnyCancellable?
     /// Flag to prevent feedback loop when we set volume locally
     private var isSettingVolumeLocally = false
     /// Subject for debouncing volume changes
@@ -140,11 +139,8 @@ final class PlaybackViewModel {
     private var logoutTask: Task<Void, Never>?
 
     private init() {
-        setupConnectionStateSubscription()
-        setupPlaybackStateSubscription()
-        setupVolumeSubscription()
+        observePlayer()
         setupVolumeDebounceSubscription()
-        setupLoadingSubscription()
         setupSeekSubscription()
         setupRemoteCommandCenter()
 
@@ -325,19 +321,16 @@ final class PlaybackViewModel {
     /// How long to wait for the player to become usable after initialization.
     private static let readinessTimeout: Duration = .seconds(5)
 
-    /// Polls until the client reports a usable player, or the timeout expires.
-    ///
-    /// Both halves are required: every Spotifly control goes through Spirc, so a connected
-    /// session without a ready Spirc is not a player we can drive.
+    /// Polls until the client reports a connected session, or the timeout expires.
     private func waitUntilReady() async -> Bool {
         let deadline = ContinuousClock.now + Self.readinessTimeout
         while ContinuousClock.now < deadline {
-            if SpotifyPlayer.isSessionConnected, SpotifyPlayer.isSpircReady {
+            if SpotifyPlayer.isSessionConnected {
                 return true
             }
             try? await Task.sleep(for: .milliseconds(100))
         }
-        return SpotifyPlayer.isSessionConnected && SpotifyPlayer.isSpircReady
+        return SpotifyPlayer.isSessionConnected
     }
 
     /// Where a play request should go.
@@ -433,7 +426,14 @@ final class PlaybackViewModel {
             return
         }
 
-        SpotifyPlayer.playRadio(trackUri: trackUri)
+        do {
+            try await SpotifyPlayer.playRadio(trackUri: trackUri)
+        } catch is CancellationError {
+            // Another start overtook this one; it reports for itself.
+        } catch {
+            debugLog("PlaybackViewModel", "Radio for \(trackUri) failed: \(error.localizedDescription)")
+            errorMessage = error.localizedDescription
+        }
     }
 
     /// The uri a remote play request should name.
@@ -476,7 +476,7 @@ final class PlaybackViewModel {
     private func resolvedPlaybackTarget() -> PlaybackTarget {
         Self.playbackTarget(
             isInitialized: isInitialized,
-            activeDeviceId: store?.activeDeviceId,
+            activeDeviceId: player.activeDeviceId,
         )
     }
 
@@ -512,7 +512,7 @@ final class PlaybackViewModel {
         _ command: ConnectCommand,
         deviceId: String,
     ) async {
-        guard let from = store?.connection?.deviceId, !from.isEmpty else {
+        guard let from = player.ownDeviceId, !from.isEmpty else {
             errorMessage = String(localized: "error.no_playback_device")
             return
         }
@@ -647,9 +647,8 @@ final class PlaybackViewModel {
     ///
     /// With nobody active and no session, nothing is issued, and the callers that move the
     /// UI optimistically must not do so for a command that never happened, hence the
-    /// `Bool` rather than a plain dispatch. The remote branch reports failures through
-    /// `errorMessage`; the local branch leaves the resulting playback state to the client's
-    /// playback publisher.
+    /// `Bool` rather than a plain dispatch. Both branches report a failure through
+    /// `errorMessage`; the resulting playback state is left to what the client publishes.
     ///
     /// `isActiveDevice` is two-valued and the cluster is not: Spotifly is active, another
     /// device is, or **nobody** is. The third state is reached routinely — waking from sleep
@@ -671,46 +670,71 @@ final class PlaybackViewModel {
     /// user's other clients in order to accomplish nothing, and making them work would mean
     /// silently starting playback in response to "next" or "seek" — a different feature, not
     /// this fix.
+    ///
+    /// `promisesPosition` marks the commands whose caller moves the display ahead of
+    /// playback — skips and seeks — and so have a promise to withdraw if they fail. Any
+    /// other command leaves a promise standing, including one a seek still in flight made.
     @discardableResult
     private func sendTransportCommand(
         _ name: String,
-        local: @escaping () -> Void,
+        promisesPosition: Bool = false,
+        local: @escaping () async throws -> Void,
         remote: @escaping (_ from: String, _ to: String) async throws -> Void,
         declined: @escaping (SpclientError) -> Void = { _ in },
     ) -> Bool {
-        guard SpotifyPlayer.isActiveDevice else {
-            guard let route = connectRoute() else {
-                // Nothing out there to command, so command ourselves. The playback state
-                // that follows is reported to Spirc as this device being active, so the
-                // Connect role comes back with it — which is what pressing a transport
-                // control with no device active asks for.
-                guard SpotifyPlayer.isSessionConnected else {
-                    debugLog("PlaybackViewModel", "\(name) dropped - no active device and session not connected")
-                    return false
-                }
-                debugLog("PlaybackViewModel", "\(name) had no active device - running locally")
-                local()
-                return true
-            }
+        let command: () async throws -> Void
+        if SpotifyPlayer.isActiveDevice {
+            command = local
+        } else if let route = connectRoute() {
+            command = { try await remote(route.from, route.to) }
+        } else if SpotifyPlayer.isSessionConnected {
+            // Nothing out there to command, so command ourselves. The playback state that
+            // follows is reported to Spirc as this device being active, so the Connect role
+            // comes back with it — which is what pressing a transport control with no device
+            // active asks for.
+            debugLog("PlaybackViewModel", "\(name) had no active device - running locally")
+            command = local
+        } else {
+            debugLog("PlaybackViewModel", "\(name) dropped - no active device and session not connected")
+            return false
+        }
 
-            Task {
-                do {
-                    try await remote(route.from, route.to)
-                } catch let error as SpclientError where error.isDeclined {
+        Task {
+            // Where the caller moved the display ahead of playback for this command.
+            // Callers anchor after this returns, and this runs after them.
+            let promise = promisesPosition ? optimisticAnchorTime : nil
+            do {
+                try await command()
+            } catch is CancellationError {
+                // A newer load took over, as a second skip does; it reports for itself.
+            } catch {
+                if let error = error as? SpclientError, error.isDeclined {
                     // Spotify refusing on its own terms — no track to go back to, or a device
                     // that will not take the command. The user pressed a control deliberately
                     // and nothing is broken, so this is a log line rather than an error banner.
                     debugLog("PlaybackViewModel", "\(name) declined: \(error.localizedDescription)")
                     declined(error)
-                } catch {
+                } else {
+                    debugLog("PlaybackViewModel", "\(name) failed: \(error.localizedDescription)")
                     errorMessage = error.localizedDescription
                 }
+                withdraw(promise)
             }
-            return true
         }
-
-        local()
         return true
+    }
+
+    /// Puts the display back where playback is, after a command that moved it ahead failed.
+    ///
+    /// Nothing reports back a command that did not happen, and another device's position is
+    /// not drift-checked, so the display stayed where the command had promised. It used to be
+    /// put back by chance, when the next cluster push re-sent the unchanged playback state;
+    /// the player model passes on only what changed. Left alone once a newer command has
+    /// moved the display, or a measurement has replaced the promise.
+    private func withdraw(_ promise: Double?) {
+        guard let promise, optimisticAnchorTime == promise else { return }
+        debugLog("PlaybackViewModel", "Withdrawing the position a failed command promised")
+        handlePlaybackStateUpdate(player.playback)
     }
 
     /// Who to address a connect-state command as, and to. Nil when nothing is active.
@@ -719,9 +743,8 @@ final class PlaybackViewModel {
     /// source from the session, which is why librespot's transfer passes its own id for both
     /// sides — so this is an identifier for their logs rather than a routing decision.
     private func connectRoute() -> (from: String, to: String)? {
-        guard let store,
-              let to = store.activeDeviceId, !to.isEmpty,
-              let from = store.connection?.deviceId, !from.isEmpty
+        guard let to = player.activeDeviceId, !to.isEmpty,
+              let from = player.ownDeviceId, !from.isEmpty
         else { return nil }
 
         return (from, to)
@@ -730,7 +753,8 @@ final class PlaybackViewModel {
     func next() {
         guard sendTransportCommand(
             "next()",
-            local: { SpotifyPlayer.next() },
+            promisesPosition: true,
+            local: { try await SpotifyPlayer.next() },
             remote: { try await SpclientAPI().sendCommand(.next, from: $0, to: $1) },
         ) else {
             return
@@ -751,7 +775,8 @@ final class PlaybackViewModel {
     func previous() {
         guard sendTransportCommand(
             "previous()",
-            local: { SpotifyPlayer.previous() },
+            promisesPosition: true,
+            local: { try await SpotifyPlayer.previous() },
             remote: { try await SpclientAPI().sendCommand(.previous, from: $0, to: $1) },
             declined: { [weak self] error in
                 guard error.isNoPreviousTrack else { return }
@@ -1040,7 +1065,33 @@ final class PlaybackViewModel {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
 
-    // MARK: - Player State Subscriptions
+    // MARK: - Player State
+
+    /// Follows the connection, the playback state and the volume in the player model. Each
+    /// observation gives the value as it stands, then every change, on the main actor.
+    ///
+    /// The playback state is how external control shows up: a phone pausing *this* device
+    /// sends a Connect command over the dealer, which pauses the pipeline, whose state
+    /// arrives here exactly as a local pause would.
+    private func observePlayer() {
+        Task { [weak self, player] in
+            for await _ in Observations({ player.connection }) {
+                self?.handleConnectionChange()
+            }
+        }
+        Task { [weak self, player] in
+            for await state in Observations({ player.playback }) {
+                self?.handlePlaybackStateUpdate(state)
+            }
+        }
+        Task { [weak self, player] in
+            for await volume in Observations({ player.volume }) {
+                if let volume {
+                    self?.handleVolumeChange(volume)
+                }
+            }
+        }
+    }
 
     /// Adopts a recovery the client completed on its own after an explicit initialization
     /// failed.
@@ -1049,28 +1100,20 @@ final class PlaybackViewModel {
     /// to `LibrespotClient`'s auto-recovery, and clearing it would make the next user
     /// command start a destructive rebuild from here. An explicit initialization clears it
     /// itself before rebuilding.
-    private func setupConnectionStateSubscription() {
-        connectionStateSubscription = SpotifyPlayer.connectionState
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self else {
-                    return
-                }
+    private func handleConnectionChange() {
+        syncConnectionReadiness()
 
-                syncConnectionReadiness()
+        guard isConnectionReady,
+              !isInitialized,
+              !isLoggingOut,
+              initializationTask == nil
+        else {
+            return
+        }
 
-                guard isConnectionReady,
-                      !isInitialized,
-                      !isLoggingOut,
-                      initializationTask == nil
-                else {
-                    return
-                }
-
-                debugLog("PlaybackViewModel", "Adopting recovery the client completed on its own")
-                isInitialized = true
-                errorMessage = nil
-            }
+        debugLog("PlaybackViewModel", "Adopting recovery the client completed on its own")
+        isInitialized = true
+        errorMessage = nil
     }
 
     /// Brings `isConnectionReady` in line with the client, freezing another device's position
@@ -1079,14 +1122,14 @@ final class PlaybackViewModel {
     /// Reads the live flags rather than trusting the delivered snapshot, which may already
     /// be stale by the time it arrives.
     ///
-    /// Called from the connection-state callback *and* once a second from the drift check.
+    /// Called on every connection change *and* once a second from the drift check.
     /// The second caller is deliberate: display interpolation now depends on this flag, so
     /// a single missed callback would leave the progress bar stopped during healthy
     /// playback — a more visible failure than the drift this prevents. Re-reading the flags
     /// on the timer makes that self-heal within a second, and routing both callers through
     /// here means the timer can never flip the flag without also freezing the position.
     private func syncConnectionReadiness() {
-        let isReady = SpotifyPlayer.isSessionConnected && SpotifyPlayer.isSpircReady
+        let isReady = SpotifyPlayer.isSessionConnected
         guard isReady != isConnectionReady else { return }
 
         // Pinned where last seen, or the display would fall back to the last anchor once it
@@ -1099,65 +1142,18 @@ final class PlaybackViewModel {
         isConnectionReady = isReady
     }
 
-    /// Subscribe to the playback state the client publishes.
-    ///
-    /// This is how external control shows up: a phone pausing *this* device sends a Connect
-    /// command over the dealer, which pauses the pipeline, whose state arrives here exactly
-    /// as a local pause would.
-    private func setupPlaybackStateSubscription() {
-        playbackStateSubscription = SpotifyPlayer.playbackState
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] state in
-                self?.handlePlaybackStateUpdate(state)
-            }
-    }
-
-    /// Subscribe to remote volume changes from Spirc
-    /// This allows volume changes from other devices to update the local slider
-    private func setupVolumeSubscription() {
-        volumeSubscription = SpotifyPlayer.volumeChanged
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] volumeU16 in
-                guard let self else { return }
-                // Convert from 0-65535 to 0.0-1.0
-                let normalizedVolume = Double(volumeU16) / 65535.0
-                debugLog("PlaybackViewModel", "Remote volume change: \(volumeU16) -> \(normalizedVolume)")
-                // Set flag to prevent feedback loop
-                isSettingVolumeLocally = true
-                volume = normalizedVolume
-                isSettingVolumeLocally = false
-                // Only persist when Spotifly is the active device
-                if remoteVolume == nil {
-                    saveVolume()
-                }
-            }
-    }
-
-    /// Subscribe to loading notifications from Spirc
-    /// This fires early (~180ms) when a track starts loading, before metadata is fetched
-    /// Allows faster Now Playing updates when playing from remote devices
-    private func setupLoadingSubscription() {
-        loadingSubscription = SpotifyPlayer.loading
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] notification in
-                guard let self else { return }
-                debugLog("PlaybackViewModel", "Loading notification: \(notification.trackUri) at \(notification.positionMs)ms")
-
-                // Update current track URI immediately for faster Now Playing updates
-                let trackChanged = !notification.trackUri.isEmpty && notification.trackUri != currentTrackUri
-                if trackChanged {
-                    currentTrackUri = notification.trackUri
-                    // Mark as playing since we're loading a new track
-                    isPlaying = true
-                }
-
-                // Use position from loading callback - this is reliable
-                anchorPosition(notification.positionMs)
-
-                if trackChanged {
-                    updateNowPlayingInfo()
-                }
-            }
+    /// The logical Connect volume the client published: set here and echoed back, or
+    /// changed from another device. Moves the slider without sending it back.
+    private func handleVolumeChange(_ newVolume: Double) {
+        debugLog("PlaybackViewModel", "Volume published: \(newVolume)")
+        // Set flag to prevent feedback loop
+        isSettingVolumeLocally = true
+        volume = newVolume
+        isSettingVolumeLocally = false
+        // Only persist when Spotifly is the active device
+        if remoteVolume == nil {
+            saveVolume()
+        }
     }
 
     /// Subscribe to debounced seek requests
@@ -1174,7 +1170,8 @@ final class PlaybackViewModel {
     private func performSeek(to positionMs: UInt32) {
         let issued = sendTransportCommand(
             "performSeek",
-            local: { SpotifyPlayer.seek(positionMs: positionMs) },
+            promisesPosition: true,
+            local: { try await SpotifyPlayer.seek(positionMs: positionMs) },
             remote: { try await SpclientAPI().sendCommand(.seek(toMs: Int(positionMs)), from: $0, to: $1) },
         )
 
@@ -1480,10 +1477,10 @@ final class PlaybackViewModel {
         // playback. That is a promise, not a measurement, and the two disagree by design
         // until the command lands — so nothing can be judged inside the grace window. Past
         // it, an optimistic anchor that no measurement has confirmed is one playback never
-        // carried out: `performSeek` rolls back a command it could not *issue*, but one
-        // that was issued and then failed reports nothing back, since `SpotifyPlayer.seek`
-        // fires it into a task and discards the error. Then either direction is evidence,
-        // because the display is somewhere playback never went.
+        // carried out: `performSeek` rolls back a command it could not *issue*, and
+        // `withdraw` one that failed, but a command that returned having done nothing — a
+        // seek before there is a pipeline to reach — says so to nobody. Then either
+        // direction is evidence, because the display is somewhere playback never went.
         let playerPosition = SpotifyPlayer.positionMs
         let displayedPosition = interpolatedPositionMs
         let displayedLead = Int64(displayedPosition) - Int64(playerPosition)

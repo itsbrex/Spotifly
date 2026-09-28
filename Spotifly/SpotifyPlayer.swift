@@ -4,13 +4,11 @@
 //
 //  The playback facade the app speaks to.
 //
-//  A static namespace over `LibrespotClient.shared` — the pure-Swift
-//  replacement for the Rust librespot bridge this file used to wrap. Every
-//  type here is the same shape it was across the FFI, so services and views
-//  needed no changes; only where the data comes from did.
+//  A static namespace over `LibrespotClient.shared` for commands and the few
+//  reads that must be synchronous. What the UI shows of the player it reads
+//  from `PlayerModel`, which the client's snapshots feed.
 //
 
-import Combine
 import Foundation
 
 /// Queue item metadata. Field names aligned with Track for consistency.
@@ -48,12 +46,13 @@ nonisolated enum StreamingAuthResult: Equatable {
     case cancelled
 }
 
-/// Queue state containing current, next, and previous tracks.
-struct QueueState {
+/// The queue around the current track, and the context it plays from.
+nonisolated struct QueueState: Equatable {
+    /// Empty when playback started from a bare list of tracks.
+    let contextUri: String
     let currentTrack: QueueItem?
     let nextTracks: [QueueItem]
-    /// Previous tracks from the queue history
-    let previousTracks: [QueueItem]?
+    let previousTracks: [QueueItem]
 }
 
 /// Playback state as reported by the local player or a remote command.
@@ -70,67 +69,35 @@ nonisolated struct PlaybackState: Equatable {
     let timestampMs: Int64
 }
 
-/// Loading notification containing track URI and position (fires early, before metadata is fetched)
-struct LoadingNotification {
-    let trackUri: String
-    let positionMs: UInt32
-}
-
-/// Track info in a set queue notification
-struct SetQueueTrackInfo {
-    let uri: String
-    let provider: String
-}
-
-/// Set queue notification containing the full queue state with context info
-struct SetQueueNotification {
-    let contextUri: String
-    let currentTrack: SetQueueTrackInfo?
-    let nextTracks: [SetQueueTrackInfo]
-    let prevTracks: [SetQueueTrackInfo]
-}
-
 /// Connection state of the streaming session.
-///
-/// `revision` orders snapshots on arrival: several sources publish
-/// independently (session events, cluster updates, recovery), and a delayed
-/// older snapshot must not overwrite a newer one. See `deliverConnectionState`.
-nonisolated struct LibrespotConnectionState: Equatable, Codable {
-    let revision: UInt64
+nonisolated struct LibrespotConnectionState: Equatable {
     let sessionConnected: Bool
-    let sessionConnectionId: String?
-    let spircReady: Bool
     let deviceId: String?
     let deviceName: String
     let reconnectAttempt: UInt32
     let lastError: String?
     let connectedSinceMs: UInt64?
-    /// Whether Spotifly is the active Connect device — derived from the
-    /// cluster's active device id. The single fact that playback routing and
-    /// the UI both read.
-    let isActiveDevice: Bool
-
-    enum CodingKeys: String, CodingKey {
-        case revision
-        case sessionConnected = "session_connected"
-        case sessionConnectionId = "session_connection_id"
-        case spircReady = "spirc_ready"
-        case deviceId = "device_id"
-        case deviceName = "device_name"
-        case reconnectAttempt = "reconnect_attempt"
-        case lastError = "last_error"
-        case connectedSinceMs = "connected_since_ms"
-        case isActiveDevice = "is_active_device"
-    }
 }
 
-// MARK: - Bridge Subjects
-
-//
-// The client's publishers are re-exposed here so subscribers keep reading the
-// exact same static API as before the Rust removal.
-
-private nonisolated(unsafe) let connectionStateSubjectBridge = LibrespotClient.shared.connectionState
+/// Everything the player tells the app, as of one moment.
+///
+/// The client yields one on every change, to the one consumer that shows them:
+/// `PlayerModel`. The facade's synchronous reads use the latest one.
+nonisolated struct PlayerSnapshot: Equatable {
+    var connection: LibrespotConnectionState?
+    /// The Connect devices; nil until the first cluster has arrived.
+    var devices: [Device]?
+    /// Empty while no device is active.
+    var activeDeviceId = ""
+    /// Counts the cluster reports, so the model can let a fresh one overrule a
+    /// transfer's guess even when it names the device it named before.
+    var clusterRevision = 0
+    /// Whichever device is playing: this one, or another one, mirrored.
+    var playback: PlaybackState?
+    var queue: QueueState?
+    /// The logical Connect volume, 0–1; nil until one has been set.
+    var volume: Double?
+}
 
 /// The one audio output. Fed by the decode loop inside the pipeline; volume,
 /// routing recovery and pacing all live in it.
@@ -140,60 +107,6 @@ enum SpotifyPlayer {
     /// The shared audio sink the client's pipeline renders into.
     nonisolated static var audioRenderer: AudioRenderer {
         audioRendererInstance
-    }
-
-    // MARK: Publishers
-
-    static var queue: AnyPublisher<QueueState?, Never> {
-        LibrespotClient.shared.queue
-    }
-
-    static var playbackState: AnyPublisher<PlaybackState?, Never> {
-        LibrespotClient.shared.playbackState
-    }
-
-    /// Remote volume changes (0-65535), including changes made from another device.
-    static var volumeChanged: AnyPublisher<UInt16, Never> {
-        LibrespotClient.shared.volumeChanged
-    }
-
-    /// Fires early when a track starts loading, before metadata is fetched.
-    static var loading: AnyPublisher<LoadingNotification, Never> {
-        LibrespotClient.shared.loading
-    }
-
-    /// Fires when the queue is set/modified (e.g., from a mobile app set_queue command).
-    static var setQueue: AnyPublisher<SetQueueNotification, Never> {
-        LibrespotClient.shared.setQueue
-    }
-
-    /// Emits when this device stops being the active Connect device.
-    ///
-    /// Activity, not health. Do not drive reconnection from this — use `connectionState`,
-    /// which is the authoritative source for whether commands can be sent.
-    static var becameInactive: AnyPublisher<Void, Never> {
-        LibrespotClient.shared.becameInactive
-    }
-
-    /// Emits when this device becomes the active Connect device.
-    ///
-    /// Also activity, not readiness: the session was already connected beforehand.
-    static var becameActive: AnyPublisher<Void, Never> {
-        LibrespotClient.shared.becameActive
-    }
-
-    /// The Connect device list, pushed on cluster updates. Replaces `/me/player/devices`.
-    static var devices: AnyPublisher<[Device]?, Never> {
-        LibrespotClient.shared.devices
-    }
-
-    static var activeDeviceChanged: AnyPublisher<String, Never> {
-        LibrespotClient.shared.activeDeviceChanged
-    }
-
-    /// Connection state updates. Subscribe to this to update the connection status dashboard.
-    static var connectionState: AnyPublisher<LibrespotConnectionState?, Never> {
-        LibrespotClient.shared.connectionState
     }
 
     // MARK: - Lifecycle
@@ -255,31 +168,14 @@ enum SpotifyPlayer {
         Task { await LibrespotClient.shared.disconnect() }
     }
 
-    /// Outcome of a force-reconnect request.
-    ///
-    /// `alreadyRecovering` and `noSession` both mean "nothing was started", but they need
-    /// opposite responses: the first is fine to ignore because recovery is already under
-    /// way, while the second means there is nothing to reconnect *to* and only a full
-    /// rebuild will help. Collapsing them into one `false` is how a wake could end up
-    /// doing nothing at all.
-    enum ForceReconnectOutcome {
-        case started
-        case alreadyRecovering
-        case noSession
-    }
-
     /// Asks the client to reconnect, without tearing down what it already has.
     ///
     /// Preferred over `PlaybackViewModel.forceReinitialize` wherever a session may exist:
     /// reinitialize runs a destructive cleanup first, which invalidates any reconnect loop
     /// currently working the problem.
     @discardableResult
-    static func forceReconnect() -> ForceReconnectOutcome {
-        switch LibrespotClient.shared.forceReconnectSync() {
-        case .started: .started
-        case .alreadyRecovering: .alreadyRecovering
-        case .noSession: .noSession
-        }
+    static func forceReconnect() -> LibrespotClient.ForceReconnectOutcome {
+        LibrespotClient.shared.forceReconnectSync()
     }
 
     // MARK: - Synchronous State
@@ -289,13 +185,8 @@ enum SpotifyPlayer {
         LibrespotClient.shared.currentConnectionState?.sessionConnected == true
     }
 
-    /// Whether Spirc is initialized and connected to Spotify Connect.
-    static var isSpircReady: Bool {
-        LibrespotClient.shared.currentConnectionState?.spircReady == true
-    }
-
-    /// Whether this device is the active Spotify Connect device.
-    /// When false, playback controls should use Web API instead of Spirc.
+    /// Whether this device is the active Spotify Connect device. When it is not,
+    /// transport controls go to the one that is, over connect-state.
     static var isActiveDevice: Bool {
         LibrespotClient.shared.isActiveDeviceFlagValue
     }
@@ -309,11 +200,6 @@ enum SpotifyPlayer {
     /// This is the actual audible position, not an estimate.
     static var positionMs: UInt32 {
         UInt32(min(UInt64(UInt32.max), LibrespotClient.shared.positionMsCached))
-    }
-
-    /// The current connection state synchronously, published like any push.
-    static func getConnectionState() -> LibrespotConnectionState? {
-        LibrespotClient.shared.currentConnectionState
     }
 
     // MARK: - Playback Commands
@@ -357,18 +243,18 @@ enum SpotifyPlayer {
     }
 
     /// Skips to the next track in the queue.
-    static func next() {
-        Task { try? await LibrespotClient.shared.next() }
+    static func next() async throws {
+        try await LibrespotClient.shared.next()
     }
 
     /// Skips to the previous track in the queue.
-    static func previous() {
-        Task { try? await LibrespotClient.shared.previous() }
+    static func previous() async throws {
+        try await LibrespotClient.shared.previous()
     }
 
     /// Seeks to the given position in milliseconds.
-    static func seek(positionMs: UInt32) {
-        Task { try? await LibrespotClient.shared.seek(positionMs: positionMs) }
+    static func seek(positionMs: UInt32) async throws {
+        try await LibrespotClient.shared.seek(positionMs: positionMs)
     }
 
     /// Sets the playback volume (0.0 - 1.0).
@@ -407,8 +293,8 @@ enum SpotifyPlayer {
 
     /// Plays radio for a seed track.
     /// - Parameter trackUri: The Spotify track URI to use as seed
-    static func playRadio(trackUri: String) {
-        Task { try? await LibrespotClient.shared.playRadio(trackUri: trackUri) }
+    static func playRadio(trackUri: String) async throws {
+        try await LibrespotClient.shared.playRadio(trackUri: trackUri)
     }
 
     // MARK: - Streaming Authorization
@@ -501,7 +387,7 @@ enum SpotifyPlayer {
 
     /// This device's Connect id, as the cluster knows it.
     private static func localDeviceId() -> String? {
-        getConnectionState()?.deviceId.flatMap { $0.isEmpty ? nil : $0 }
+        LibrespotClient.shared.currentConnectionState?.deviceId.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Both transfers go over connect-state, beside every other Connect command
@@ -595,13 +481,4 @@ enum SpotifyPlayer {
 @globalActor
 actor SpotifyPlayerActor {
     static let shared = SpotifyPlayerActor()
-}
-
-/// The last queue state the client published, or nil if none has arrived.
-///
-/// The push equivalent of `/me/player/queue`, for the recovery paths that need to ask
-/// rather than wait. Nil is meaningful and distinct from an empty queue: it means nothing
-/// has been heard yet, so a caller should try again rather than conclude nothing is playing.
-nonisolated func currentQueueSnapshot() -> QueueState? {
-    LibrespotClient.shared.queueSnapshotValue
 }
