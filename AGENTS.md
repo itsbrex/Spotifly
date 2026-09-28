@@ -4,17 +4,19 @@ Spotify client for macOS (and maybe later iPad and iOS).
 
 ## Tech Stack
 
-- **Language**: Swift 6.3 with strict concurrency enabled
-- **Target Platforms**: Latest Apple OSes only (macOS, iOS, iPadOS)
+- **Language**: Swift 6 language mode with strict concurrency, built with Xcode 27. The app
+  target defaults to `@MainActor` isolation (`SWIFT_DEFAULT_ACTOR_ISOLATION`), so a type
+  used off the main actor, or from the test target, needs `nonisolated`
+- **Target Platforms**: Latest Apple OSes only — macOS 27 is the deployment target (iOS and
+  visionOS are listed at 27 too)
 - **UI Framework**: SwiftUI
-- **Playback and Spotify Connect**: Swift, in `Spotifly/SwiftLibrespot/` — a port of what
-  librespot does, not a dependency on it. There is no Rust and no librespot checkout to
-  build; Ogg Vorbis decoding is the vendored C libvorbis in `Spotifly/Vendor/`.
-  `DEVELOPMENT.md` has the architecture.
+- **Playback and Spotify Connect**: Swift, in `Spotifly/SwiftLibrespot/`, ported from
+  librespot, which is where its type names come from. Ogg Vorbis decoding is the vendored C
+  libvorbis in `Spotifly/Vendor/`. `DEVELOPMENT.md` has the architecture.
 
 ## Development Guidelines
 
-- Use Swift 6.3 strict concurrency features (`Sendable`, `@MainActor`, async/await)
+- Use Swift's strict concurrency features (`Sendable`, `@MainActor`, async/await)
 - No backwards compatibility needed - target only the latest OS versions
 - Format all Swift code with: `swiftformat --swiftversion 6.3 .`
 
@@ -22,23 +24,24 @@ Also read `AGENTS-twostraws.md` for general development guidelines and best prac
 
 ## Network Request Logging
 
-All Spotify API network requests must include debug logging. Add a log statement after constructing the URL string:
+All Spotify network requests must include debug logging. Add a log statement after constructing the URL string:
 
 ```swift
 let urlString = "\(baseURL)/endpoint"
-debugLog("SpotifyAPI", "[GET] \(urlString)")
+debugLog("SpclientAPI", "[GET] \(urlString)")
 ```
 
 - Use the appropriate HTTP method: `[GET]`, `[POST]`, `[PUT]`, `[DELETE]`
-- The first argument names the module making the request — `"SpotifyAPI"`, `"KeymasterAuth"`, and so on
+- The first argument names the module making the request — `"SpclientAPI"`, `"PartnerAPI"`, `"KeymasterAuth"`, and so on
 - `debugLog` lives in `DebugLog.swift` and compiles to an empty inlinable function outside DEBUG builds, so it needs no `#if DEBUG` around it
 
 ## Track identity is the market id
 
 **A track can have two ids.** When a recording is not playable in the account's market,
 Spotify substitutes one that is — a different `id` and `uri` for what a listener would call
-the same song. The Web API names both, returning the substitute as `id` and the id you asked
-for under `linked_from`. Which one you get depends on the endpoint and on `market`.
+the same song. Spotify's Web API, which the app no longer calls, names both, returning the
+substitute as `id` and the id you asked for under `linked_from`. Which one you get depends
+on the endpoint and on `market`.
 
 **The rule: the app keys everything on the id the API returned, and never rewrites it.**
 Store keys, favorites, queue position, playback, writes — all the market id. Nothing in the
@@ -96,21 +99,23 @@ same one pathfinder returns. The removal also cleared an entry that had been sav
 *original* id, which says Spotify resolves the relink on write rather than keying entries
 literally. That is the reading, not a certainty: the library was not re-snapshotted first.
 
-**There is more than one track-shaped response type**, which is the part that bites.
-`TrackCodable` serves most endpoints, but `/albums/{id}/tracks` decodes through
-`AlbumTracksCodable.AlbumTrackItemCodable`, with its own fields and its own `toAPITrack()`.
-Under the old rule a type that forgot to conform silently dropped the recovery field; under
-this one the failure mode is the reverse — a hand-written conversion that reintroduces an
-original id from somewhere. Either way the request looks correct and the store is wrong.
+**There is more than one track-shaped response**, which is the part that bites. Pathfinder
+answers with a different shape for an album's tracks, a playlist's items, saved tracks and
+search results, and spclient's metadata has its own; each has its own `Track` initializer in
+`PartnerAPI/PathfinderEntities.swift` or `PartnerAPI/SpclientEntities.swift`. The failure
+mode is a hand-written conversion that reintroduces an original id from somewhere: the
+request looks correct and the store is wrong.
 
 **When adding or changing a track-returning request:**
 
-- send `market=from_token` where the endpoint supports it, so the id matches what pathfinder
-  and playback use;
+- send `market=from_token` where the endpoint supports it, as spclient's metadata does, so
+  the id matches what pathfinder and playback use;
 - do not project or read `linked_from`; if a response carries one, ignore it;
-- build entities through `toAPITrack()` rather than field by field. A hand-written conversion
-  is how `/search` once came to disagree with everything around it while looking reasonable;
-- where a codable is consumed directly, as the playback bootstrap does, read `id` and `uri`.
+- build entities through those initializers — `Track(pathfinder:)` and its siblings,
+  `Track(spclient:id:)` — rather than field by field. A hand-written conversion is how
+  `/search` once came to disagree with everything around it while looking reasonable;
+- where a response is read without one, as the queue reads the cluster's uris, take the id
+  in the uri as given (`SpotifyAPI.parseTrackURI`).
 
 ## State Management Architecture
 
@@ -126,13 +131,14 @@ The app uses a normalized state store pattern (similar to Pinia/Redux) for data 
 
 **Entities** (`Store/Entities.swift`)
 - Unified data models: `Track`, `Album`, `Artist`, `Playlist`, `Device`
-- Decoupled from API response types (conversions in `EntityConversions.swift`)
+- Decoupled from API response types (conversions in `EntityConversions.swift`, and for the
+  partner APIs in `PartnerAPI/PathfinderEntities.swift` and `PartnerAPI/SpclientEntities.swift`)
 
 **Services** (`Store/Services/`)
 - Handle API calls and update AppStore on success
 - Each service takes `AppStore` in its initializer
 - Injected via `@Environment(XxxService.self)`
-- Available services: `TrackService`, `AlbumService`, `ArtistService`, `PlaylistService`, `DeviceService`, `QueueService`, `RecentlyPlayedService`, `SearchService`
+- Available services: `TrackService`, `AlbumService`, `ArtistService`, `PlaylistService`, `HomeService`, `SearchService`, `DeviceService`, `QueueService`, `ConnectionService`
 
 ### Network Request Deduplication
 
@@ -146,13 +152,13 @@ from there.
 
 ```swift
 try await albumRequests.run(albumId) {
-    try await self.loadAlbum(albumId: albumId, accessToken: self.tokenProvider())
+    try await self.loadAlbum(albumId: albumId)
 }
 ```
 
 Requests that carry **many IDs at once** use `BatchInFlightRequests`
 (`Store/Services/BatchInFlightRequests.swift`) instead, because one key to one run does
-not fit them: `/v1/tracks` and `/me/tracks/contains` cover a whole batch, and the next
+not fit them: track metadata and saved-status checks each cover a set of IDs, and the next
 caller arrives with an overlapping but different set. It joins the runs already carrying
 some of its IDs and starts one run for the remainder, which it hands to the operation:
 
@@ -162,7 +168,7 @@ try await metadataLoads.run(missingTrackIds) { uncoveredTrackIds in
 }
 ```
 
-Same guarantees as the keyed registry — unstructured runs, cache check before the token,
+Same guarantees as the keyed registry — unstructured runs, cache check before the run,
 entries dropped on failure so the next caller retries. `TrackService` owns both batch
 registries; route new track metadata through `ensureTracksLoaded(trackIds:)` rather than
 adding a second fetch path.
@@ -171,25 +177,24 @@ Rules when adding a loading path:
 
 - **A key means one postcondition.** `album:<id>` always means "metadata *and* tracks are
   in the store". Two operations that fetch different amounts may not share a key.
-- **Check the cache before the token.** Services hold a `tokenProvider` and take the
-  token inside the run, after the early returns, so a cache hit costs nothing.
+- **Check the cache before the run.** Return early when the store already holds what the
+  key promises, as `ensureAlbumLoaded` does, so a cache hit costs no request at all.
 - **A superseded run must not write.** `cancel(_:)` only asks; call
   `try Task.checkCancellation()` after the network call, before touching the store.
 - **Cache what was fetched, not what is non-empty.** `detailsLoaded` / `tracksLoaded` are
   set by the load, so a genuinely empty album is not re-fetched forever.
 - **Views read the store**, never a `@State` copy of an entity.
 
-The services are stored as `@State` in `LoggedInView` so their registries survive view
-recreation. `plans/section-request-pattern.md` has the full reasoning.
+The services that hold registries are stored as `@State` in `LoggedInView` so the
+registries survive view recreation. `plans/section-request-pattern.md` has the full reasoning.
 
 ## Debug Logging
 
 Everything logs through `debugLog(module, message)` in `DebugLog.swift`. It writes to
 **stderr** in Debug builds and compiles away to nothing in Release, so there is no log level
-to set and no environment variable to pass — building Debug is the switch. (There used to be
-`RUST_LOG`, which librespot's `env_logger` read. Nothing reads it now.)
+to set and no environment variable to pass — building Debug is the switch.
 
-### Spirc/Connect Trace Logging
+### Connect Trace Logging
 
 Connect state transitions come from the modules that own them, so narrowing a run down means
 filtering on the module prefix:
@@ -201,6 +206,7 @@ filtering on the module prefix:
 
 - `SpircController` — registration, PutState reasons, the cluster it is answered with
 - `DealerConnection` — the WebSocket: connection id, cluster pushes, remote commands, pings
+- `Accesspoint` — the TCP connection to Spotify: connect, handshake, login, audio keys
 - `LibrespotSession`, `LibrespotClient` — session lifecycle, recovery, command dispatch
 - `AudioPipeline`, `AudioRenderer` — track loads, decoding, position, end of track
 
@@ -225,11 +231,11 @@ This will:
 After `/release`, you must:
 1. Push both repos
 2. Create a GitHub Release in this repo with the built .zip artifact
-3. Update the Homebrew formula in homebrew-spotifly (URL + SHA256)
+3. Update the cask in homebrew-spotifly, `Casks/spotifly.rb`: its `version` and `sha256` (the URL follows the version)
 
 ### About homebrew-spotifly
 
 The `../homebrew-spotifly` repo is temporary scaffolding for the Homebrew tap. Once the app is accepted into official Homebrew, it will be deleted. Until then:
-- Releases are published to **this repo** (ralph/spotifly)
-- The homebrew-spotifly repo only contains the tap formula and a user-facing changelog
+- Releases are published to **this repo** (ralph/Spotifly)
+- The homebrew-spotifly repo only contains the tap's cask and a user-facing changelog
 - Both changelogs are updated during `/release`

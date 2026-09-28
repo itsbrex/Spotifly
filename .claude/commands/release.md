@@ -34,5 +34,5 @@ Release a new version of Spotifly.
    - Show what was done
    - Remind them to:
      1. Push both repos
-     2. Create a GitHub Release in **this repo** (ralph/spotifly) with the built .zip artifact
-     3. Update the Homebrew formula in homebrew-spotifly to point to the new release URL and update the SHA256
+     2. Create a GitHub Release in **this repo** (ralph/Spotifly) with the built .zip artifact
+     3. Update the cask in homebrew-spotifly, `Casks/spotifly.rb`: its `version` and `sha256` (the URL follows the version)
