@@ -15,7 +15,7 @@ neither is needed any more.
 ## Before sending a change
 
 - Build, and run the unit tests (`-only-testing:SpotiflyTests`; see DEVELOPMENT.md).
-- Format with `swiftformat --swiftversion 6.3 .`
+- Format with `swiftformat --swiftversion 6.4 .`
 - Add a line to `CHANGELOG.md` under `[Unreleased]`.
 - For anything touching playback or Spotify Connect, run the app. Connect can be broken
   while music still plays, and a second device (another instance, or Spotify's web

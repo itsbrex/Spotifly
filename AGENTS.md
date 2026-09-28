@@ -18,7 +18,7 @@ Spotify client for macOS (and maybe later iPad and iOS).
 
 - Use Swift's strict concurrency features (`Sendable`, `@MainActor`, async/await)
 - No backwards compatibility needed - target only the latest OS versions
-- Format all Swift code with: `swiftformat --swiftversion 6.3 .`
+- Format all Swift code with: `swiftformat --swiftversion 6.4 .`
 
 Also read `AGENTS-twostraws.md` for general development guidelines and best practices inspired by Paul Hudson's "Two Straws" approach.
 

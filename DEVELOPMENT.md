@@ -62,7 +62,7 @@ xcodebuild -scheme Spotifly -configuration Debug test -destination 'platform=mac
 Format Swift before committing:
 
 ```bash
-swiftformat --swiftversion 6.3 .
+swiftformat --swiftversion 6.4 .
 ```
 
 ## Running and debugging
