@@ -197,13 +197,28 @@ behaves like this:
   `CancellationError`.
 - Setting the renderer's own `audioOutputDeviceUniqueID` makes the waiting (or the next)
   enqueue return `enqueuedWithSuggestedFlush(wasFlushedAutomatically)`, with an invalid
-  flush time. `renderingEventsAfterFinishedEnqueuing` delivered nothing in any test.
+  flush time.
 - **Changing the system's default output reports nothing.** The deprecated
   `WasFlushedAutomatically` notification still arrives, 130–160 ms after the switch, but
   the waiting enqueue never returns, and the clock runs on over silence (−20 s of lead
   and falling). Flushing and restarting the clock on the same receiver revives it; no
   rebuild is needed. The app detects the stall from the enqueue's side (see the
   changelog) and reloads from the playhead.
+- **`renderingEventsAfterFinishedEnqueuing` does not report it either**, and is not
+  meant to. Apple documents its events for the time "after there are no more samples to
+  enqueue, but before rendering has finished": the tail after a stream's last buffer.
+  While an enqueue waits, a problem comes back as that enqueue's result, and that result
+  is what never comes. The stream delivered nothing in any test: subscribed through two
+  switches in Control Center with an enqueue waiting, and with nothing enqueuing when
+  the renderer's own device was set, which the next enqueue reported instead. Untested is
+  a system switch after the last buffer, the one window the events are for: the last
+  second or two of a track, with gapless off or at the end of the queue. (Checked
+  2026-09-28.)
+- **A faster signal exists, and is not used.** A Core Audio listener on
+  `kAudioHardwarePropertyDefaultOutputDevice` fired about 160 ms before the deprecated
+  notification. It would cut the silence after a switch to a fraction of a second; the
+  stall check costs about a second of skipped audio, which was judged not worth the
+  extra code.
 
 Three runs each, alternating, same output (the LG display):
 
