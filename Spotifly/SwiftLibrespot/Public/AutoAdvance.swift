@@ -39,20 +39,24 @@ nonisolated enum AutoAdvance {
     /// queue holds.
     ///
     /// - Parameters:
+    ///   - isUnplayable: whether a track is already known to be unavailable, which the queue
+    ///     then moves past without loading it, and without a word: its row is greyed out.
     ///   - load: plays a uri, or throws why it could not.
     ///   - skipped: told the uri and the name of each track before the queue moves past it.
     static func run(
         from uri: String,
         in queue: PlaybackQueue,
+        isUnplayable: (String) -> Bool,
         load: (String) async throws -> Void,
         skipped: (_ uri: String, _ name: String) -> Void,
     ) async -> Outcome {
-        var uri = uri
+        let advance = { queue.advance(respectingRepeat: false) }
         // The context's tracks count the one the run starts from, unless the
         // queue has just taken it off the user queue.
         var attemptsLeft = queue.userQueue.count + queue.contextTracks.count
             + (queue.currentProvider == "queue" ? 1 : 0)
-        while true {
+        var next: String? = uri
+        while let uri = queue.stepOver(isUnplayable, from: next, by: advance) {
             do {
                 try await load(uri)
                 return .playing
@@ -64,9 +68,9 @@ nonisolated enum AutoAdvance {
                     return .stopped(error)
                 }
                 skipped(uri, name)
-                guard let next = queue.advance(respectingRepeat: false) else { return .queueEnded }
-                uri = next
+                next = advance()
             }
         }
+        return .queueEnded
     }
 }

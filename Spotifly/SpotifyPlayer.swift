@@ -193,6 +193,12 @@ enum SpotifyPlayer {
         LibrespotClient.shared.forceReconnectSync()
     }
 
+    /// Tells playback which tracks Spotify will not play, from what the app's lists said, so
+    /// that it steps over them instead of loading each to find out.
+    static func setUnplayable(_ uris: Set<String>) {
+        Task { await LibrespotClient.shared.setUnplayable(uris) }
+    }
+
     // MARK: - Synchronous State
 
     /// Whether the session is currently connected and ready for playback commands.
