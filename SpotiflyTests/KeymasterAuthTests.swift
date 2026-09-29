@@ -125,6 +125,46 @@ struct KeymasterCallbackTests {
         #expect(LoopbackCallbackServer.parseRequestLine("POST /login HTTP/1.1\r\n\r\n") == nil)
         #expect(LoopbackCallbackServer.parseRequestLine("garbage") == nil)
     }
+
+    /// The fallback line has no link, so this also fails if either page is missing from the bundle.
+    @Test func `both bundled pages link back to the app through a scheme it registers`() throws {
+        let urlTypes = try #require(Bundle.main.object(forInfoDictionaryKey: "CFBundleURLTypes") as? [[String: Any]])
+        let schemes = urlTypes.flatMap { $0["CFBundleURLSchemes"] as? [String] ?? [] }
+
+        #expect(LoopbackCallbackServer.successPage.contains("Authentication Successful"))
+        #expect(LoopbackCallbackServer.failurePage.contains("Authentication Failed"))
+        for page in [LoopbackCallbackServer.successPage, LoopbackCallbackServer.failurePage] {
+            #expect(schemes.contains { page.contains("href=\"\($0)://") })
+        }
+    }
+
+    @Test func `a favicon request gets a bare 404, and the redirect after it still lands`() async throws {
+        let server = LoopbackCallbackServer()
+        let port = try await server.start()
+        func get(_ path: String) async throws -> (Data, Int?) {
+            let (data, response) = try await URLSession.shared.data(from: #require(URL(string: "http://127.0.0.1:\(port)\(path)")))
+            return (data, (response as? HTTPURLResponse)?.statusCode)
+        }
+
+        let (favicon, faviconStatus) = try await get("/favicon.ico")
+        #expect(faviconStatus == 404)
+        #expect(favicon.isEmpty)
+
+        let (_, loginStatus) = try await get("/login?code=abc&state=s")
+        #expect(loginStatus == 200)
+
+        let callback = try await server.waitForCallback(timeout: .seconds(5))
+        #expect(callback.queryItems?.first { $0.name == "code" }?.value == "abc")
+    }
+
+    @Test func `only a redirect with a code gets the success page`() throws {
+        let success = LoopbackCallbackServer.successPage
+        let failure = LoopbackCallbackServer.failurePage
+
+        #expect(try LoopbackCallbackServer.page(for: callback("code=abc&state=s")) == success)
+        #expect(try LoopbackCallbackServer.page(for: callback("error=access_denied&state=s")) == failure)
+        #expect(try LoopbackCallbackServer.page(for: callback("code=&state=s")) == failure)
+    }
 }
 
 /// The token response, and the rotation that must survive it.

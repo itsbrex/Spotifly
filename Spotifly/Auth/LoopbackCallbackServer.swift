@@ -200,8 +200,9 @@ actor LoopbackCallbackServer {
     /// so parsing the first chunk would reject a perfectly good redirect that happened to be
     /// split.
     ///
-    /// Every path here reports once and stops reading; `deliver` is the one-shot guard for
-    /// anything that slips through, so this needs no second one of its own.
+    /// Every path here reports once and stops reading, except a favicon request, which
+    /// reports nothing; `deliver` is the one-shot guard for anything that slips through, so
+    /// this needs no second one of its own.
     private nonisolated static func receiveRequest(
         on connection: NWConnection,
         completion: @escaping @Sendable (Result<URLComponents, Error>) -> Void,
@@ -236,24 +237,54 @@ actor LoopbackCallbackServer {
                     return
                 }
 
-                let body = "<html><body>Spotifly is authorized. You can close this tab.</body></html>"
-                let response = """
+                func respond(_ response: String) {
+                    connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+                        connection.cancel()
+                    })
+                }
+
+                // Browsers ask for the tab's icon on their own, and that request is not the
+                // redirect: it gets a bare 404, and the listener goes on waiting.
+                guard components.path != "/favicon.ico" else {
+                    respond("HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    return
+                }
+
+                let body = page(for: components)
+                respond("""
                 HTTP/1.1 200 OK\r
                 Content-Type: text/html; charset=utf-8\r
                 Content-Length: \(body.utf8.count)\r
                 Connection: close\r
                 \r
                 \(body)
-                """
-
-                connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-                    connection.cancel()
-                })
+                """)
                 completion(.success(components))
             }
         }
 
         read(Data())
+    }
+
+    /// What the browser tab shows once the redirect has landed: the success page when Spotify
+    /// sent a code, and the failure page when it did not, as after a declined consent. Only the
+    /// code is looked at; `KeymasterAuth` judges the state and the error.
+    nonisolated static func page(for callback: URLComponents) -> String {
+        let code = callback.queryItems?.first { $0.name == "code" }?.value
+        return code?.isEmpty == false ? successPage : failurePage
+    }
+
+    nonisolated static let successPage = bundledPage("OAuthSuccess")
+    nonisolated static let failurePage = bundledPage("OAuthFailure")
+
+    /// A page from the app bundle, or a plain line should the resource be missing.
+    private nonisolated static func bundledPage(_ name: String) -> String {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "html"),
+              let page = try? String(contentsOf: url, encoding: .utf8)
+        else {
+            return "<html><body>Please go back to the Spotifly window.</body></html>"
+        }
+        return page
     }
 
     /// Pulls the query out of an HTTP request line: `GET /login?code=…&state=… HTTP/1.1`.
