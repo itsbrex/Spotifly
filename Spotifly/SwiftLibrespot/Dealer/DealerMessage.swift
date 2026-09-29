@@ -135,10 +135,19 @@ public enum SpircCommand: Sendable {
     case setQueue(queuedUris: [String])
     case unknown(String)
 
-    public struct PlayCommand: Sendable {
-        public let contextUri: String?
+    public nonisolated struct PlayCommand: Sendable {
+        /// What to play, as librespot's `PlayContext` has it.
+        public enum Context: Sendable, Equatable {
+            /// An album, playlist or other context to resolve.
+            case uri(String)
+            /// The tracks of a context sent inline, with no uri of its own.
+            case tracks([String])
+        }
+
+        public let context: Context
+        /// `skip_to`'s track, where to start. See `PlaybackQueue.start(in:index:uri:)`.
         public let trackUri: String?
-        public let trackUris: [String]?
+        /// `skip_to`'s index, as the sender counted.
         public let index: Int?
         public let positionMs: UInt64?
     }
