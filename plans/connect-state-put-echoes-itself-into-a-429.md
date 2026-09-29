@@ -1,6 +1,9 @@
 # The connect-state PUT echoes back to itself and runs into a 429
 
-Status: **diagnosed, not fixed.** Noticed while diagnosing
+Status: **obsolete — the loop was librespot's, and Spotifly no longer runs it.**
+`SpircController.handleClusterUpdate` adopts the cluster and sends nothing back. A PutState
+goes out only for a heartbeat, a local change, a volume change or a command, so our own echo
+has nothing to trigger. Its plan (#60) was closed unimplemented. Noticed while diagnosing
 `plans/seek-bar-jumps-between-two-position-clocks.md`, where this loop is what made that
 bug visible; it is not the cause of it.
 Components: `librespot/connect/src/spirc.rs` — an upstream `fixme`, so a fix is a patch to

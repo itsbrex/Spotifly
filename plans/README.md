@@ -3,7 +3,8 @@
 What each plan is, and whether it is live. Reviewed 2026-08-15; updated 2026-09-27 for the
 Swift stack on `swift-librespot`, which removed librespot and the Rust layer. Plans from
 before that describe components that no longer exist — `rust/`, librespot's `spirc.rs` —
-and say so where it matters below.
+and say so where it matters below. On 2026-09-29, three of the five planned items were found
+already settled by that change, and their draft PRs were closed.
 
 **A plan is not deleted when it is finished.** Most of these record a fix, its evidence, and
 the reasoning behind a rule the code still follows — several are cited from `CLAUDE.md`, and
@@ -15,16 +16,13 @@ and both look complete at a glance.
 
 ## Live work
 
-Ranked. The first five have implementation plans of their own, each on a branch with a draft
-PR; the rest are recorded but not planned.
+Ranked. The first two have implementation plans of their own, each on a branch with a draft
+PR, rewritten for the Swift stack on 2026-09-29. The rest are recorded but not planned.
 
 | # | Plan | Why here |
 | --- | --- | --- |
-| 1 | [unavailable-tracks-skip-the-rest-of-a-playlist.md](unavailable-tracks-skip-the-rest-of-a-playlist.md) | Playback silently drains a whole playlist in half a second. Observed, never investigated |
-| 2 | [free-account-exits-the-process.md](free-account-exits-the-process.md) | librespot called `exit()` for a non-premium account. That went with librespot; the Swift stack gets an accesspoint login error (`premiumAccountRequired`) instead, and what the app then shows is untested |
-| 3 | [the-reported-position-is-the-decoder-not-the-playhead.md](the-reported-position-is-the-decoder-not-the-playhead.md) | **Resolved by the Swift stack**: `AudioPipeline` reports the renderer's playhead (`AudioRenderer.playedFrames`), not the decoder |
-| 4 | [connect-state-put-echoes-itself-into-a-429.md](connect-state-put-echoes-itself-into-a-429.md) | Written against librespot's spirc. `SpircController` has its own PutState path, and the September live runs saw no 429 |
-| 5 | [single-grant-partner-api.md](single-grant-partner-api.md) — **Track B only** | **Done on `swift-librespot`**: playback is Swift, with the vendored libvorbis as decoder, and `rust/` is gone |
+| 1 | [unavailable-tracks-skip-the-rest-of-a-playlist.md](unavailable-tracks-skip-the-rest-of-a-playlist.md) | Under librespot a playlist drained in half a second. Read from the Swift code, auto-advance now swallows the load error and **stops** at the first unplayable track, with nothing on screen. Not observed yet |
+| 2 | [free-account-exits-the-process.md](free-account-exits-the-process.md) | librespot's `exit()` is gone. The accesspoint's `ProductInfo` packet, which carries the account type, reaches `default:` in `Accesspoint.handlePacket` and is dropped, so what a free account gets is unknown. Login most likely succeeds, as it did for librespot |
 
 ### Recorded, not planned
 
@@ -61,9 +59,10 @@ PR; the rest are recorded but not planned.
 | Plan | Status |
 | --- | --- |
 | [playback-errors-are-never-shown.md](playback-errors-are-never-shown.md) | Done 2026-09-28 (#72): the now-playing bar shows the view model's error in place of the title for five seconds, in the mini player too. Checked live for a failing play, and by hand offline: favorites, a remote Next, the mini player |
+| [the-reported-position-is-the-decoder-not-the-playhead.md](the-reported-position-is-the-decoder-not-the-playhead.md) | Resolved by the Swift stack (#65): `AudioPipeline` reports the sink's playhead (`sink.playedFrames`), not the decoder. Its staged plan (#59) was closed unimplemented |
 | [player-interface-after-the-ffi.md](player-interface-after-the-ffi.md) | Done 2026-09-28 (#71): ordered streams in the engine, one `@Observable` `PlayerModel` fed by snapshots, no Combine between the player and the UI. Also answers whether a slow UI can interrupt playback: no |
 | [keep-playing-through-a-reconnect.md](keep-playing-through-a-reconnect.md) | Fixed 2026-09-27 (#68): a reset no longer rebuilds the pipeline. Checked with the drop hook, mid-track and paused. Controls pressed during the outage work now too |
-| [single-grant-partner-api.md](single-grant-partner-api.md) | **Track A shipped** 2026-08-14 (#49, #51, #53, #54). One grant, no dashboard app, `api.spotify.com` retired. Track B is open — see above |
+| [single-grant-partner-api.md](single-grant-partner-api.md) | **Track A shipped** 2026-08-14 (#49, #51, #53, #54). One grant, no dashboard app, `api.spotify.com` retired. **Track B shipped** 2026-09-27 (#65): playback is Swift, decoding with the vendored libvorbis, and `rust/` is gone. The B1 decoder spike (#61) was closed unimplemented |
 | [seek-bar-jumps-between-two-position-clocks.md](seek-bar-jumps-between-two-position-clocks.md) | Fixed 2026-08-14, confirmed at runtime across three logs |
 | [navigation-one-location-value.md](navigation-one-location-value.md) | Completed. Fixed two navigation tests that had failed for months and were wrongly treated as a baseline |
 | [logged-in-view-init-side-effects.md](logged-in-view-init-side-effects.md) | Completed |
@@ -93,6 +92,7 @@ demand. The regression signal is a log line, not a reproduction.
 | [relinked-track-now-playing-identity.md](relinked-track-now-playing-identity.md) | Same reversal. Its Rust-side half — `Loading`/`Playing`/`Paused` own the logical URI — carried over: the Swift pipeline reports the URI it was asked to play |
 | [streaming-auth-implementation-plan.md](streaming-auth-implementation-plan.md) | Shipped as #49, then superseded the same day. It designs **two** grants; there is now one. Its checkboxes were never ticked, so it reads as open and is not |
 | [streaming-auth-needs-a-first-party-client-id.md](streaming-auth-needs-a-first-party-client-id.md) | The 2026-08-11 login5 break. Resolved — the shipped fix skips login5 entirely |
+| [connect-state-put-echoes-itself-into-a-429.md](connect-state-put-echoes-itself-into-a-429.md) | A loop in librespot's `spirc.rs`, which Spotifly no longer runs. `SpircController` adopts a cluster update without sending a PutState in reply, so there is nothing to echo. Its plan (#60) was closed unimplemented |
 
 ## Deleted in this review
 

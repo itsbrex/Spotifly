@@ -1,6 +1,9 @@
 # Every position Spotifly reports is the decoder's, not the one you can hear
 
-Status: **diagnosed, not fixed.** Split out of
+Status: **resolved by the Swift stack (#65), not by a fix of its own.** `AudioPipeline`
+reports the track frame the sink has played (`sink.playedFrames`), which is the playhead this
+ticket asked for. The staged plan for librespot's `ProxySink` (#59) was closed unimplemented.
+Kept as the record of why the decoder's position was wrong. Split out of
 `plans/seek-bar-jumps-between-two-position-clocks.md`, which fixed the one symptom that
 was *visible* — the seek bar jittering — and deliberately left these, because they need a
 different and much larger change.

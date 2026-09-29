@@ -1,11 +1,14 @@
 # One grant, no dashboard app — moving Spotifly onto the client's own APIs
 
-Status: **Track A shipped 2026-08-14; Track B is open and is the only live part of this
-plan.** Track A landed across #49, #51, #53 and #54 and is in 1.2.7 — one grant with
-Spotify's own desktop client id, the pathfinder and spclient clients, search, library, home,
-playlist writes, and the retirement of `api.spotify.com` and the user's dashboard client id.
-Nothing in the app calls the Web API any longer. The 16 ticked tasks below are that work; the
-four unticked ones are Track B, which is gated on task B1 and has not started.
+Status: **both tracks shipped.** Track B shipped 2026-09-27 as #65, by a different route
+than B1–B4 below: the vendored libvorbis decodes, the pipeline downloads the whole file
+before decoding rather than streaming it, and `rust/` is gone. The B1 spike plan (#61) was
+closed unimplemented. Track A landed across #49, #51, #53 and #54 and is in 1.2.7 — one
+grant with Spotify's own desktop client id, the pathfinder and spclient clients, search,
+library, home, playlist writes, and the retirement of `api.spotify.com` and the user's
+dashboard client id. Nothing in the app calls the Web API any longer. The 16 ticked tasks
+below are that work. The four unticked ones are Track B as it was planned, left unticked
+because #65 did not follow them.
 
 Two pieces were deliberately cut from Track A rather than left unfinished, and each has its
 own plan: `plans/playlist-attributes-not-written.md` and `plans/playlist-folder-hierarchy.md`.
