@@ -159,15 +159,16 @@ struct LoggedInLifecycleModifier: ViewModifier {
                         }
                     }
 
-                    // SPOTIFLY_DEBUG_OPEN=<spotify:album:… or spotify:artist:…>: open that
-                    // page, for an id nothing in the app leads to, such as an album from
-                    // another market, which Spotify answers as not found.
+                    // SPOTIFLY_DEBUG_OPEN=<album, artist or playlist uri>: open that page, for
+                    // an id nothing in the app leads to, such as an album from another market.
                     if let open = ProcessInfo.processInfo.environment["SPOTIFLY_DEBUG_OPEN"] {
                         debugLog("DebugAutoplay", "Opening \(open)")
                         if let id = SpotifyURI.id(from: open, kind: "album") {
                             navigationCoordinator.navigateToAlbumSection(albumId: id)
                         } else if let id = SpotifyURI.id(from: open, kind: "artist") {
                             navigationCoordinator.navigateToArtistSection(artistId: id)
+                        } else if let id = SpotifyURI.id(from: open, kind: "playlist") {
+                            navigationCoordinator.navigateToPlaylistSection(playlistId: id)
                         }
                     }
 

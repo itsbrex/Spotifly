@@ -20,6 +20,7 @@ struct PlaylistDetailView: View {
 
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var canRetry = true
     @State private var showEditDetailsDialog = false
     @State private var showDeleteConfirmation = false
     @State private var showUnfollowConfirmation = false
@@ -72,9 +73,7 @@ struct PlaylistDetailView: View {
             if let playlist {
                 playlistContent(playlist)
             } else if let errorMessage {
-                InlineLoadError(message: errorMessage) {
-                    await loadPlaylist()
-                }
+                InlineLoadError(message: errorMessage, retry: canRetry ? { await loadPlaylist() } : nil)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -233,9 +232,7 @@ struct PlaylistDetailView: View {
             ProgressView("loading.tracks")
                 .padding()
         } else if let errorMessage {
-            InlineLoadError(message: errorMessage) {
-                await reloadTracks()
-            }
+            InlineLoadError(message: errorMessage, retry: canRetry ? { await reloadTracks() } : nil)
         } else if !tracks.isEmpty {
             trackList
         }
@@ -363,6 +360,7 @@ struct PlaylistDetailView: View {
         // a cached playlist must not flash a spinner over its tracks.
         isLoading = playlist?.tracksLoaded != true
         errorMessage = nil
+        canRetry = true
 
         do {
             try await playlistService.ensurePlaylistLoaded(playlistId: playlistId)
@@ -371,6 +369,7 @@ struct PlaylistDetailView: View {
             // running and its result is in the store for whatever replaces us.
             if !isCancellation(error) {
                 errorMessage = error.localizedDescription
+                canRetry = isRetryable(error)
             }
         }
 
@@ -390,6 +389,7 @@ struct PlaylistDetailView: View {
         } catch {
             if !isCancellation(error) {
                 errorMessage = error.localizedDescription
+                canRetry = isRetryable(error)
             }
         }
 
