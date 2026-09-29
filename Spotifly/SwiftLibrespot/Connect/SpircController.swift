@@ -151,10 +151,10 @@ public actor SpircController {
         debugLog("SpircController", "SPIRC ready")
     }
 
-    /// Shutdown and unregister from Spotify Connect.
+    /// Stops reporting to Spotify Connect, ahead of the disconnect.
     ///
     /// - Parameter stopped: what played here, which a deliberate disconnect
-    ///   reports paused where it had got to before the goodbye, as librespot's
+    ///   reports paused where it had got to, as librespot's
     ///   `handle_disconnect` does. Spotify hears the position only when the
     ///   state changes, so it would keep the last report, often the track's
     ///   start and still "playing", and whatever mirrors it next would show
@@ -182,14 +182,8 @@ public actor SpircController {
         dealerPushes?.cancel()
         dealerPushes = nil
 
-        // Tell the cluster this device is going away. Best effort: a dead
-        // socket must not block shutdown.
-        var goodbye = PutStateRequestProto()
-        goodbye.memberType = .connectState
-        goodbye.putStateReason = .becameInactive
-        goodbye.clientSideTimestamp = UInt64(Date().timeIntervalSince1970 * 1000)
-        goodbye.device = buildDevice(playerState: nil)
-        _ = try? await dealerConnection.putState(goodbye)
+        // No goodbye: Spotify answers a `becameInactive` PutState 422, and the
+        // disconnect that follows already takes this device off Connect.
     }
 
     // MARK: - State Publishing
@@ -316,7 +310,7 @@ public actor SpircController {
 
     private func buildPutStateRequest(isActive: Bool) -> PutStateRequestProto {
         var request = PutStateRequestProto()
-        request.device = buildDevice(playerState: playerState)
+        request.device = buildDevice()
         request.memberType = .connectState
         request.isActive = isActive
         request.putStateReason = isActive ? .newDevice : .spircHello
@@ -339,7 +333,7 @@ public actor SpircController {
     ///
     /// Active-ness is *not* part of it — `ConnectDeviceInfo` has no such
     /// field; `PutStateRequest.is_active` is where the cluster reads it.
-    private func buildDevice(playerState: SpircPlayerState?) -> ConnectDevice {
+    private func buildDevice() -> ConnectDevice {
         var deviceInfoProto = ConnectDeviceInfo()
         deviceInfoProto.canPlay = deviceInfo.supportsPlayback
         deviceInfoProto.volume = volume
