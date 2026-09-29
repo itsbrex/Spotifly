@@ -90,6 +90,9 @@ playlist view's problem, not the queue's, and the index already picks the copy t
 anywhere: drop it there. The jump back finds the row through the same function, and its test
 looks the row up through `recent()`, so it holds in either order.
 
+Done in #81's merge of `main`, 2026-09-29: `recentPositions` lists `history`'s last indices in
+play order, and `recent` keeps #81's documentation.
+
 ## Verification
 
 - [x] Unit tests, `QueueJumpTests`, eight cases: a context row ahead (history gains the tracks

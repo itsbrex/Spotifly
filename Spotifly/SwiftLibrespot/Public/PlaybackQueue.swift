@@ -321,6 +321,12 @@ final nonisolated class PlaybackQueue {
     /// How many played tracks `recent()` lists.
     static let recentLimit = 10
 
+    /// The last `limit` tracks played, in play order: the most recent last,
+    /// beside the current track.
+    ///
+    /// Both readers want that order: Connect's `prev_tracks`, as librespot
+    /// keeps it, and the queue view, which lists these above the current
+    /// track. See `plans/done/queue-history-listed-newest-first.md`.
     func recent(limit: Int = PlaybackQueue.recentLimit) -> [(uri: String, provider: String)] {
         recentPositions(limit: limit).map { (history[$0], "context") }
     }
@@ -328,6 +334,6 @@ final nonisolated class PlaybackQueue {
     /// Where each track `recent(limit:)` lists sits in `history`, in its
     /// order, so a row of the published list can be found again.
     private func recentPositions(limit: Int) -> [Int] {
-        history.indices.suffix(limit).reversed()
+        Array(history.indices.suffix(limit))
     }
 }

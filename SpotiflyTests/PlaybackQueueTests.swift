@@ -25,6 +25,23 @@ struct PlaybackQueueTests {
         #expect(queue.advance() == nil)
     }
 
+    @Test func `history is in play order, the most recent last`() {
+        let tracks = album(14)
+        let queue = PlaybackQueue()
+        queue.setContext(uri: "spotify:album:a", tracks: tracks, startIndex: 0)
+
+        for _ in 0 ..< 3 {
+            _ = queue.advance()
+        }
+        #expect(queue.recent().map(\.uri) == Array(tracks[..<3]))
+
+        for _ in 0 ..< 10 {
+            _ = queue.advance()
+        }
+        #expect(queue.currentUri == tracks[13])
+        #expect(queue.recent().map(\.uri) == Array(tracks[3 ..< 13]))
+    }
+
     @Test func `repeat context wraps back to the first track`() {
         let queue = PlaybackQueue()
         queue.setContext(uri: "spotify:album:a", tracks: album(2), startIndex: 0)
