@@ -7,13 +7,23 @@
 
 import Foundation
 
-nonisolated enum PartnerAPIError: Error, LocalizedError {
+nonisolated enum PartnerAPIError: Error, LocalizedError, Equatable {
     case requestFailed(Int, String)
     case persistedQueryNotFound(String)
     case graphQLErrors([String])
     case emptyPayload
     /// A write Spotify answered with HTTP 200 and a failure `__typename`.
     case mutationRejected(String, String)
+    /// Spotify has no such album or artist for this account, and says so with HTTP 200 and a
+    /// union whose `__typename` is `NotFound`. Measured on 2026-09-29: an album from another
+    /// market and an id that never existed answer alike, and so do both artist operations.
+    /// Asking again gets the same answer, so the views offer no retry; see `isRetryable(_:)`.
+    case notFound(Entity)
+
+    enum Entity: Sendable {
+        case album
+        case artist
+    }
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +39,10 @@ nonisolated enum PartnerAPIError: Error, LocalizedError {
             messages.joined(separator: "; ")
         case .emptyPayload:
             "Spotify returned no data"
+        case .notFound(.album):
+            String(localized: "error.album_not_found")
+        case .notFound(.artist):
+            String(localized: "error.artist_not_found")
         }
     }
 }
@@ -245,6 +259,9 @@ nonisolated struct PartnerAPI: Sendable {
         guard let album = response.data?.albumUnion else {
             throw PartnerAPIError.emptyPayload
         }
+        guard album.typename != "NotFound" else {
+            throw PartnerAPIError.notFound(.album)
+        }
 
         return album
     }
@@ -272,6 +289,9 @@ nonisolated struct PartnerAPI: Sendable {
 
         guard let artist = response.data?.artistUnion else {
             throw PartnerAPIError.emptyPayload
+        }
+        guard artist.typename != "NotFound" else {
+            throw PartnerAPIError.notFound(.artist)
         }
 
         return artist
