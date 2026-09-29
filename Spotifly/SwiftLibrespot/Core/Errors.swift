@@ -13,6 +13,8 @@ public enum LibrespotError: Error, LocalizedError, Sendable, Equatable {
 
     case connectionFailed(String)
     case authenticationFailed(String)
+    /// The accesspoint refused the login because the account is not Premium.
+    case premiumRequired
     case sessionExpired
     case networkUnavailable
 
@@ -58,6 +60,8 @@ public enum LibrespotError: Error, LocalizedError, Sendable, Equatable {
             "Connection failed: \(message)"
         case let .authenticationFailed(message):
             "Authentication failed: \(message)"
+        case .premiumRequired:
+            String(localized: "playback.needs_premium")
         case .sessionExpired:
             "Session expired, please re-authenticate"
         case .networkUnavailable:

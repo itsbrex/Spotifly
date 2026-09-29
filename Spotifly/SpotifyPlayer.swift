@@ -97,6 +97,9 @@ nonisolated struct LibrespotConnectionState: Equatable {
     let reconnectAttempt: UInt32
     let lastError: String?
     let connectedSinceMs: UInt64?
+    /// Whether this Mac may play for the account: false for an account Spotify named other
+    /// than Premium at login, or refused for want of it. See `LibrespotSession.streams`.
+    let streams: Bool
 }
 
 /// Everything the player tells the app, as of one moment.

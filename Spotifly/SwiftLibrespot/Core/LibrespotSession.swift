@@ -30,6 +30,16 @@ public actor LibrespotSession {
 
     public let deviceInfo: DeviceInfo
 
+    /// Whether this Mac may play for the account, by its type at the last login. It decides
+    /// how this Mac registers, and the client publishes it.
+    public private(set) var streams = true
+
+    /// Only Premium streams, as under librespot, whose `check_catalogue` quit for anything
+    /// else. A type that never came is let through, as it was there.
+    nonisolated static func streams(accountType: String?) -> Bool {
+        accountType.map { $0 == "premium" } ?? true
+    }
+
     /// Credentials of the current or most recent login. Kept across
     /// disconnections so a reconnect does not need them handed in again;
     /// cleared on logout via `forgetCredentials()`.
@@ -118,6 +128,8 @@ public actor LibrespotSession {
                 }
             }
             guard let welcome else { throw lastError }
+            // The account type is waited for from here, alongside the dealer's connect.
+            let accountTypeDeadline = ContinuousClock.now + .seconds(2)
 
             // A dead socket must surface as a failed session, which is what
             // arms the client's auto-recovery; without this the receive loop
@@ -151,8 +163,14 @@ public actor LibrespotSession {
                 Task { await self.handleTransportLost() }
             }
 
+            // Read before registering: this Mac is offered as a speaker only for an account
+            // that may stream here.
+            streams = await Self.streams(accountType: accesspoint!.accountType(waitingUntil: accountTypeDeadline))
+            var device = deviceInfo
+            device.supportsPlayback = deviceInfo.supportsPlayback && streams
+
             spircController = SpircController(
-                deviceInfo: deviceInfo,
+                deviceInfo: device,
                 accesspoint: accesspoint!,
                 dealerConnection: dealerConnection!,
             )
