@@ -217,10 +217,10 @@ public actor LibrespotClient {
     }
 
     /// Shuts down and clears the snapshot, so a later login does not inherit
-    /// the previous account's devices, queue, or playback state.
+    /// the previous account's devices, queue, or playback state. The playback
+    /// goes in `shutdown()`'s teardown, with the pipeline it ran on.
     public func shutdownAndCleanup() async {
         await shutdown()
-        clearLocalState()
         publish {
             $0.devices = nil
             $0.queue = nil
@@ -229,14 +229,24 @@ public actor LibrespotClient {
         }
     }
 
-    /// Drops all connections and subscriptions. Credentials survive — sleep
-    /// uses this shape, and wake rebuilds from them.
+    /// Drops all connections and subscriptions, and the playback that ran on
+    /// them. Kept, it read as still playing over a pipeline that is gone, and
+    /// the next session's identical mirror was no change for the player model
+    /// to pass on. Credentials survive. Sleep does not come through here:
+    /// `disconnect()` keeps its track for the wake.
     private func teardown() async {
         sessionEvents?.cancel()
         sessionEvents = nil
-        await audioPipeline?.stop()
-        await session?.disconnect()
+        // The pipeline goes before anything is awaited, so that nothing still on
+        // its way from it, an event or an auto-advance, can report a track once
+        // the playback has been dropped.
+        let pipeline = audioPipeline
         audioPipeline = nil
+        pipelineEvents?.cancel()
+        pipelineEvents = nil
+        clearLocalState()
+        await pipeline?.stop()
+        await session?.disconnect()
         session = nil
         spclient = nil
 
@@ -457,8 +467,30 @@ public actor LibrespotClient {
         await audioPipeline?.pause()
     }
 
-    public func resume() async {
-        await audioPipeline?.resume()
+    /// Resumes what is loaded here. With nothing loaded while the snapshot
+    /// shows a track, that track is another device's, mirrored, and nobody
+    /// plays it: resuming then takes it over from where it was left, as Play
+    /// does on Spotify's own clients, instead of resuming an empty pipeline.
+    public func resume() async throws {
+        guard localState == nil, let mirrored = latest.withLock({ $0.playback }) else {
+            await audioPipeline?.resume()
+            return
+        }
+        let queue = latest.withLock { $0.queue }
+        let contextUri = queue?.contextUri ?? ""
+        let positionMs = UInt64(max(0, mirrored.positionMs))
+        debugLog("LibrespotClient", "Taking over the mirrored \(mirrored.trackUri) in \(contextUri.isEmpty ? "a list of tracks" : contextUri) at \(positionMs)ms")
+
+        shuffleEnabled = mirrored.shuffle
+        playbackQueue.setShuffle(mirrored.shuffle)
+        repeatMode = mirrored.repeatTrack ? .track : (mirrored.repeatContext ? .context : .off)
+        playbackQueue.setRepeat(repeatMode)
+        if contextUri.isEmpty {
+            // Started from a bare list of uris, so the list is all there is.
+            try await playTracks([mirrored.trackUri] + (queue?.nextTracks.map(\.uri) ?? []), positionMs: positionMs)
+        } else {
+            try await play(uriOrUrl: contextUri, trackIndex: -1, startingAtUri: mirrored.trackUri, positionMs: positionMs)
+        }
     }
 
     public func stop() async {
@@ -792,10 +824,13 @@ public actor LibrespotClient {
 
         case let .playing(trackUri):
             let position = await audioPipeline?.currentPositionMs() ?? 0
+            // Torn down or replaced while this waited: the track is no one's now.
+            guard !Task.isCancelled else { return }
             publishPlaybackState(for: trackUri, playing: true, paused: false, positionMs: Int64(position))
 
         case let .paused(trackUri):
             let position = await audioPipeline?.currentPositionMs() ?? 0
+            guard !Task.isCancelled else { return }
             publishPlaybackState(for: trackUri, playing: false, paused: true, positionMs: Int64(position))
         }
 
@@ -1098,7 +1133,7 @@ public actor LibrespotClient {
             await pause()
 
         case .resume:
-            await resume()
+            try? await resume()
 
         case let .seekTo(positionMs):
             try? await audioPipeline?.seek(positionMs: positionMs)

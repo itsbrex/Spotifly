@@ -289,6 +289,10 @@ final class PlaybackViewModel {
         // rebuild proves otherwise. Matters when initialize() throws on a restart.
         isInitialized = false
         isLoading = true
+        // Cleared before the rebuild, not after: the new session can report a track while it
+        // is being built, such as another device's paused one, and the player model passes on
+        // changes only, so a later reset would erase it for good.
+        clearPlaybackState()
         let generation = lifecycleGeneration
         do {
             try await SpotifyPlayer.initialize()
@@ -321,18 +325,21 @@ final class PlaybackViewModel {
             await SpotifyPlayer.shutdownAndCleanup()
             isInitialized = false
             errorMessage = nil
+            // Whatever that session mirrored belongs to the account that left.
+            clearPlaybackState()
         }
+        isLoading = false
+    }
 
-        // Reset stale playback state — after (re)init the pipeline has no track loaded.
-        // Publish the stopped rate before clearing the URI, then remove the old track's
-        // metadata. Harmless on a first init, where these are already at their defaults.
+    /// Forgets the track: publishes the stopped rate before clearing the URI, then removes
+    /// the old track's metadata.
+    private func clearPlaybackState() {
         isPlaying = false
         updateNowPlayingPosition()
         currentTrackUri = nil
         lastHandledTrackUri = nil
         updateNowPlayingInfo()
         anchorPosition(0)
-        isLoading = false
     }
 
     /// How long to wait for the player to become usable after initialization.
@@ -623,10 +630,7 @@ final class PlaybackViewModel {
     /// out during an outage left buffered audio playing and the previous track showing.
     func stop() {
         SpotifyPlayer.stop()
-        isPlaying = false
-        currentTrackUri = nil
-        lastHandledTrackUri = nil
-        updateNowPlayingInfo()
+        clearPlaybackState()
     }
 
     /// Sets the AppStore reference. Call this after AppStore is created.
@@ -677,8 +681,9 @@ final class PlaybackViewModel {
     ///
     /// What the local fallback recovers is **resume**, which is also the only one that needs
     /// recovering. A paused pipeline still holds its track, so resuming plays on from where
-    /// it stopped — and the playing state that follows is reported to Spirc as this device
-    /// being active, which takes the Connect role back with it. The others reach a pipeline
+    /// it stopped; with nothing loaded here, the client takes over the track another device
+    /// left, which the bar mirrors. Either way the playing state that follows is reported to
+    /// Spirc as this device being active, which takes the Connect role back with it. The others reach a pipeline
     /// that is stopped or empty and do nothing — and that is the right outcome rather than a
     /// gap to close: with nobody active there is no track playing, so there is nothing to
     /// pause, skip or seek. Activating for them would take the Connect role away from the
@@ -827,7 +832,7 @@ final class PlaybackViewModel {
     func resume() {
         guard sendTransportCommand(
             "resume()",
-            local: { SpotifyPlayer.resume() },
+            local: { try await SpotifyPlayer.resume() },
             remote: { try await SpclientAPI().sendCommand(.resume, from: $0, to: $1) },
         ) else {
             return
