@@ -404,16 +404,14 @@ public actor LibrespotClient {
 
     /// Plays a track, album, playlist, artist, or station URI/URL.
     /// - Parameters:
-    ///   - trackIndex: index within the context to start at (-1 = first).
-    ///   - startingAtUri: track to start on when the caller knows the uri but
-    ///     not its index — a Connect `play` names both a context and a
-    ///     `skip_to.track_uri`, and only the resolved list can turn one into
-    ///     the other.
+    ///   - trackIndex: where in the context to start; nil for its start.
+    ///   - startingAtUri: the track to start on. With an index as well, the
+    ///     track decides; see `PlaybackQueue.start(in:index:uri:)`.
     ///   - positionMs: where in that track to start.
     ///   - paused: load it without starting playout, as a paused handover does.
     public func play(
         uriOrUrl: String,
-        trackIndex: Int,
+        trackIndex: Int? = nil,
         startingAtUri: String? = nil,
         positionMs: UInt64 = 0,
         paused: Bool = false,
@@ -437,25 +435,11 @@ public actor LibrespotClient {
             throw LibrespotError.trackNotFound("Context has no tracks")
         }
 
-        var tracks = context.tracks
-        let start: Int
-        if trackIndex >= 0 {
-            start = min(trackIndex, tracks.count - 1)
-        } else if let startingAtUri {
-            // A track the resolved list does not name — a relinked id, a
-            // window that moved — still has to be the one that plays, so it
-            // goes in front of the context rather than starting it over.
-            if let found = tracks.firstIndex(of: startingAtUri) {
-                start = found
-            } else {
-                tracks.insert(startingAtUri, at: 0)
-                start = 0
-            }
-        } else {
-            // No track named, as by Play on an album or a playlist: its first that plays.
-            start = firstPlayable(in: tracks)
-        }
-        setQueue(contextUri: context.uri.isEmpty ? uri : context.uri, tracks: tracks, startIndex: start)
+        // No track named, as by Play on an album or a playlist: its first that plays.
+        let start = trackIndex == nil && startingAtUri == nil
+            ? (tracks: context.tracks, index: firstPlayable(in: context.tracks))
+            : PlaybackQueue.start(in: context.tracks, index: trackIndex, uri: startingAtUri)
+        setQueue(contextUri: context.uri.isEmpty ? uri : context.uri, tracks: start.tracks, startIndex: start.index)
         try await loadCurrentTrack(positionMs: positionMs, paused: paused)
     }
 
@@ -466,7 +450,7 @@ public actor LibrespotClient {
         }
 
         if normalized.count == 1, first.contains("spotify:track:") {
-            try await play(uriOrUrl: first, trackIndex: 0, positionMs: positionMs)
+            try await play(uriOrUrl: first, positionMs: positionMs)
             return
         }
 
@@ -479,7 +463,7 @@ public actor LibrespotClient {
         guard let id = SpotifyAPI.parseTrackURI(trackUri) ?? Self.trackIdOnly(from: trackUri) else {
             throw LibrespotError.trackNotFound("Not a track uri")
         }
-        try await play(uriOrUrl: "spotify:station:track:\(id)", trackIndex: 0)
+        try await play(uriOrUrl: "spotify:station:track:\(id)")
     }
 
     // MARK: - Playback: Transport
@@ -510,7 +494,7 @@ public actor LibrespotClient {
             // Started from a bare list of uris, so the list is all there is.
             try await playTracks([mirrored.trackUri] + (queue?.nextTracks.map(\.uri) ?? []), positionMs: positionMs)
         } else {
-            try await play(uriOrUrl: contextUri, trackIndex: -1, startingAtUri: mirrored.trackUri, positionMs: positionMs)
+            try await play(uriOrUrl: contextUri, startingAtUri: mirrored.trackUri, positionMs: positionMs)
         }
     }
 
@@ -1204,7 +1188,6 @@ public actor LibrespotClient {
             if !transfer.contextUri.isEmpty {
                 try await play(
                     uriOrUrl: transfer.contextUri,
-                    trackIndex: -1,
                     startingAtUri: track,
                     positionMs: positionMs,
                     paused: transfer.isPaused,
@@ -1237,19 +1220,20 @@ public actor LibrespotClient {
             // The context is the queue; a track named beside it only says where
             // to start in it. Preferring the track built a one-track queue and
             // threw the rest of the playlist away, so a remote "play this album
-            // from track 4" stopped after track 4.
+            // from track 4" stopped after track 4. Named with an index, the
+            // track decides where, as librespot's `PlayingTrack` does.
             let positionMs = playCommand.positionMs ?? 0
             if let contextUri = playCommand.contextUri, !contextUri.isEmpty {
                 try? await play(
                     uriOrUrl: contextUri,
-                    trackIndex: playCommand.index ?? -1,
+                    trackIndex: playCommand.index,
                     startingAtUri: playCommand.trackUri,
                     positionMs: positionMs,
                 )
             } else if let uris = playCommand.trackUris, uris.count > 1 {
                 try? await playTracks(uris, positionMs: positionMs)
             } else if let single = playCommand.trackUri ?? playCommand.trackUris?.first {
-                try? await play(uriOrUrl: single, trackIndex: 0, positionMs: positionMs)
+                try? await play(uriOrUrl: single, positionMs: positionMs)
             }
 
         case .pause:

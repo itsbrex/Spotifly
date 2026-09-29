@@ -397,22 +397,24 @@ final class PlaybackViewModel {
         return .needsAuthorization
     }
 
-    func play(uriOrUrl: String, trackIndex: Int = -1) async {
+    /// Plays a track or a context. A row in a list passes its index and its track; see
+    /// `PlaybackQueue.start(in:index:uri:)`.
+    func play(uriOrUrl: String, trackIndex: Int? = nil, startingAtUri: String? = nil) async {
         if !isInitialized {
             await initializeIfNeeded()
         }
 
         switch resolvedPlaybackTarget() {
         case .local:
-            await startLocally(startedUri: uriOrUrl) {
-                try await SpotifyPlayer.play(uriOrUrl: uriOrUrl, trackIndex: trackIndex)
+            await startLocally(startedUri: startingAtUri ?? uriOrUrl) {
+                try await SpotifyPlayer.play(uriOrUrl: uriOrUrl, trackIndex: trackIndex, startingAtUri: startingAtUri)
             }
 
         case let .remote(deviceId):
             // One uri either way: the command's own context builder tells a track from a
             // context, where the Web API needed the caller to split them into two fields.
             await startRemotely(
-                .play(uri: Self.remoteStartUri(for: uriOrUrl), trackIndex: trackIndex),
+                .play(uri: Self.remoteStartUri(for: uriOrUrl), trackIndex: trackIndex, trackUri: startingAtUri),
                 deviceId: deviceId,
             )
 

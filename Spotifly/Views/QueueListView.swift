@@ -223,10 +223,9 @@ struct QueueListView: View {
                         currentSection: .queue,
                         onDoubleTap: {
                             if let contextUri = store.queue.contextUri {
-                                await playbackViewModel.play(
-                                    uriOrUrl: contextUri,
-                                    trackIndex: index,
-                                )
+                                // The track alone: a queue row's index counts queue rows,
+                                // not the context's tracks.
+                                await playbackViewModel.play(uriOrUrl: contextUri, startingAtUri: item.track.uri)
                             } else {
                                 await playbackViewModel.play(uriOrUrl: item.track.uri)
                             }

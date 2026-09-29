@@ -47,6 +47,29 @@ final nonisolated class PlaybackQueue {
 
     // MARK: - Loading
 
+    /// Where a context starts, from what the caller named: a position in it, a track, or
+    /// both.
+    ///
+    /// A double-click names both, and the view's list is not the resolved context, so the
+    /// index alone can name another track (`plans/done/clicked-row-plays-another-track.md`).
+    /// So the track decides, and the index says which copy of it: the one nearest the index.
+    /// A track the context does not name still has to be the one that plays, so it goes in at
+    /// the index, where what follows is what followed its row, or in front without one. An
+    /// index alone is clamped to the context, as it always was.
+    ///
+    /// - Returns: the tracks to play, the named track put in when it was missing, and the
+    ///   index to start at.
+    static func start(in tracks: [String], index: Int?, uri: String?) -> (tracks: [String], index: Int) {
+        let target = min(max(index ?? 0, 0), max(tracks.count - 1, 0))
+        guard let uri else { return (tracks, target) }
+        if let nearest = tracks.nearestIndex(to: target, where: { $0 == uri }) {
+            return (tracks, nearest)
+        }
+        var tracks = tracks
+        tracks.insert(uri, at: target)
+        return (tracks, target)
+    }
+
     /// Replaces the whole playing context.
     func setContext(uri: String, tracks: [String], startIndex: Int) {
         contextUri = uri

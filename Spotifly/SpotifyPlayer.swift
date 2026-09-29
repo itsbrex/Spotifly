@@ -229,10 +229,11 @@ enum SpotifyPlayer {
     /// Supports tracks, albums, playlists, artists, and station contexts.
     /// - Parameters:
     ///   - uriOrUrl: Spotify URI or URL (e.g., "spotify:album:xxx")
-    ///   - trackIndex: Track index to start at (-1 = from beginning, 0+ = specific track)
+    ///   - trackIndex: Where in a context to start; nil for its start.
+    ///   - startingAtUri: The track to start on; with an index, it decides which track plays.
     @SpotifyPlayerActor
-    static func play(uriOrUrl: String, trackIndex: Int = -1) async throws {
-        try await LibrespotClient.shared.play(uriOrUrl: uriOrUrl, trackIndex: trackIndex)
+    static func play(uriOrUrl: String, trackIndex: Int? = nil, startingAtUri: String? = nil) async throws {
+        try await LibrespotClient.shared.play(uriOrUrl: uriOrUrl, trackIndex: trackIndex, startingAtUri: startingAtUri)
     }
 
     /// Plays a track by its Spotify track ID.

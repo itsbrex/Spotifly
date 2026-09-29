@@ -78,15 +78,26 @@ struct ConnectPlayCommandTests {
         #expect(!json.contains("track_uri"))
     }
 
-    @Test func `a context with no index carries no skip_to at all`() throws {
-        let json = try encoded(.play(uri: "spotify:album:a1"))
+    /// As the web player sends them. A receiver starts at the uri and uses the index only
+    /// without one, so a list that disagrees with the context still plays the row clicked.
+    @Test func `a context with an index and a track sends both`() throws {
+        let command = try fields(.play(uri: "spotify:album:a1", trackIndex: 4, trackUri: "spotify:track:t5"))
 
-        #expect(!json.contains("skip_to"))
+        let options = try #require(command["options"] as? [String: Any])
+        let skipTo = try #require(options["skip_to"] as? [String: Any])
+        #expect(skipTo["track_uri"] as? String == "spotify:track:t5")
+        #expect(skipTo["track_index"] as? Int == 4)
     }
 
-    /// A negative index means "no offset" at the call site, and must not become `skip_to: -1`.
-    @Test func `a negative index is no index`() throws {
-        let json = try encoded(.play(uri: "spotify:album:a1", trackIndex: -1))
+    @Test func `a context with a track and no index sends the track alone`() throws {
+        let json = try encoded(.play(uri: "spotify:album:a1", trackUri: "spotify:track:t5"))
+
+        #expect(json.contains("spotify:track:t5"))
+        #expect(!json.contains("track_index"))
+    }
+
+    @Test func `a context with no index carries no skip_to at all`() throws {
+        let json = try encoded(.play(uri: "spotify:album:a1"))
 
         #expect(!json.contains("skip_to"))
     }
